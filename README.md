@@ -8,7 +8,7 @@ Small, composable agent skills I use every day. Each skill is a folder with a `S
 
 - **[review-mode](./skills/learning/review-mode/SKILL.md)**: Read any document the way you review a pull request. Leave questions and comments inline with the **+** gutter, keep reading, then submit them all at once and get a reply in each thread. Two modes: **learn** (a tutor explains, re-explains and corrects) and **review** (a senior reviewer assesses design docs, RFCs and specs with Blocking / Should fix / Nit severity).
 
-  Try: "teach me how gRPC streaming works in review mode", or attach a design doc and say "review this with me".
+  Try: "teach me about OpenAPI", or attach a design doc and say "review this with me".
 
 ## Install
 

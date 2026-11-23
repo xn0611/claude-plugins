@@ -1,6 +1,6 @@
 ---
 name: review-mode
-description: Read any document PR-review style in the Active Reader page (+ gutter, pending comments, submit, inline replies). Use for "teach me X in review mode", "review mode", or reviewing a design doc, RFC or spec.
+description: Teaches a topic or walks through a document in the Active Reader page, where the user leaves PR-style comments in a + gutter and gets inline replies on submit. Use whenever the user wants to learn a topic ("teach me X", "teach me about X", "help me learn X", "I want to understand X", "give me a lesson on X"), says "review mode", or wants to read or review a design doc, RFC or spec with you; not for a quick factual question, a one-line explanation or debugging.
 ---
 
 # Review mode
