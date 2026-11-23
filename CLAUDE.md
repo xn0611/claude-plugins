@@ -19,5 +19,5 @@ This repo holds agent skills, shipped as one Claude Code plugin (`xinnan-skills`
 ## active-reader specifics
 
 - The reader page is `skills/active-reader/assets/reader.js` + `reader.css`. Change them only when asked to change how the reader looks or behaves; keep the current visual design.
-- No quiz and no end-of-document summary: the user removed them on purpose.
+- No quiz and no end-of-document summary: the user removed them on purpose. The end of the page is **Go deeper** (questions about the whole document, suggested next topics); keep it from turning into either.
 - After changing the assets, rebuild a test page with `node skills/active-reader/scripts/build-page.mjs <some doc.md>` and open it.

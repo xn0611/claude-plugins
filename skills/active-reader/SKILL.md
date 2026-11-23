@@ -5,7 +5,7 @@ description: Opens a lesson on a topic, or an existing document, in the Active R
 
 # Active Reader
 
-The user reads a document the way they review a pull request: hover a paragraph and press **+** (or select a phrase) to leave a comment, keep reading while comments stay pending, then press **Finish & submit review**. Each comment gets a reply inline in its thread, and they can reply back in any thread. A side panel lists pending and answered comments and reading progress. Answering in batch is the point: it makes them read actively instead of skimming an answer.
+The user reads a document the way they review a pull request: hover a paragraph and press **+** (or select a phrase) to leave a comment, keep reading while comments stay pending, then press **Finish & submit review**. Each comment gets a reply inline in its thread, and they can reply back in any thread. A side panel lists pending and answered comments and reading progress. At the end, a **Go deeper** section takes questions about the document as a whole and, on request, suggests what to learn or dig into next, based on what they commented on. Answering in batch is the point: it makes them read actively instead of skimming an answer.
 
 The reader is already built. It lives in `assets/` next to this file: `reader.js` (all behaviour, including the tutor and reviewer prompts), `reader.css` (the design) and `index.html` (a tiny loader). Never rewrite or regenerate them. Each session only supplies a document. Do not add a quiz or an end-of-document summary.
 

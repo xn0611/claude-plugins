@@ -106,6 +106,10 @@
       empty: "No comments yet. When something surprises you, confuses you, or reminds you of something, leave a note.",
       who: "Tutor",
       follow: "Push back, ask for an example, or explain it back in your own words.",
+      deeper: "Finished? Ask a question about the topic as a whole, or let the tutor suggest what to learn next from what you explored.",
+      askPh: "A broader question: how this connects to something else, when you'd reach for it, what comes after it…",
+      suggest: "Suggest what to learn next",
+      request: (t) => `Teach me about ${t}`,
     },
     review: {
       kinds: { question: "Question", comment: "Suggestion", confused: "Concern" },
@@ -114,19 +118,24 @@
       empty: "No comments yet. Flag anything unclear, risky, missing or worth changing.",
       who: "Reviewer",
       follow: "Push back, add context, or ask how the author should fix it.",
+      deeper: "Finished? Comment on the document as a whole, or let the reviewer suggest what to dig into next from what you flagged.",
+      askPh: "About the whole document: the overall approach, what's missing, alternatives worth weighing…",
+      suggest: "Suggest what to dig into next",
+      request: (t) => `Review this with me: ${t}`,
     },
   };
 
   // ---------- state ----------
   let meta = { title: "", mode: "learn", source: "" };
   let docSrc = "", blocks = [], threads = [], maxSeen = 0, openComposer = null, busy = false;
+  let suggestions = [], suggesting = false, canSample = false;
   const T = () => TEXT[meta.mode];
   const key = () => "activeReader:" + hash(docSrc);
-  function save() { try { localStorage.setItem(key(), JSON.stringify({ threads, maxSeen })); } catch (e) {} }
+  function save() { try { localStorage.setItem(key(), JSON.stringify({ threads, maxSeen, suggestions })); } catch (e) {} }
   function load() {
     try {
       const s = JSON.parse(localStorage.getItem(key()) || "null");
-      if (s) { threads = (s.threads || []).map((t) => ({ ...t, busy: false })); maxSeen = s.maxSeen || 0; }
+      if (s) { threads = (s.threads || []).map((t) => ({ ...t, busy: false })); maxSeen = s.maxSeen || 0; suggestions = s.suggestions || []; }
     } catch (e) {}
   }
 
@@ -159,6 +168,15 @@
     end.innerHTML = `<span>End of document.</span><button class="primary" id="submit2">Submit my review</button>`;
     doc.appendChild(end);
     $("submit2").onclick = submitReview;
+    // "Go deeper": comments on the document as a whole (block id "end") and suggested next topics.
+    const deep = document.createElement("div"); deep.className = "blk deeper"; deep.id = "end"; deep.dataset.id = "end";
+    deep.innerHTML = `<div class="gut"></div><div class="cnt"><h2>Go deeper</h2><p class="deeper-sub">${T().deeper}</p></div><div></div>
+      <div class="threads"></div>
+      <div class="deeper-acts"><button id="askBroad">Ask about the whole ${meta.mode === "learn" ? "topic" : "document"}</button><button id="suggestBtn">${T().suggest}</button></div>
+      <div class="suggest" id="suggest"></div>`;
+    doc.appendChild(deep);
+    $("askBroad").onclick = () => openFor("end", "");
+    $("suggestBtn").onclick = suggestNext;
     observe(); renderAll();
   }
 
@@ -171,6 +189,13 @@
         ts.map(threadHTML).join("") + (openComposer && openComposer.blockId === b.id && !openComposer.editId ? composerHTML(openComposer) : "");
       highlight(el, b, ts);
     }
+    const endEl = $("end");
+    if (endEl) {
+      const ts = threads.filter((t) => t.blockId === "end");
+      endEl.querySelector(".threads").innerHTML =
+        ts.map(threadHTML).join("") + (openComposer && openComposer.blockId === "end" && !openComposer.editId ? composerHTML(openComposer) : "");
+    }
+    renderSuggest();
     wire(); renderSide(); save();
   }
 
@@ -216,7 +241,7 @@
     return `<div class="card"><div class="composer">
       ${c.quote ? `<div class="quote">“${esc(c.quote)}”</div>` : ""}
       <div class="kinds">${Object.keys(T().kinds).map((x) => `<button class="k-${x} ${x === k ? "on" : ""}" data-kind="${x}">${T().kinds[x]}</button>`).join("")}</div>
-      <textarea id="ctext" placeholder="${T().ph[k]}">${esc(c.text || "")}</textarea>
+      <textarea id="ctext" placeholder="${c.blockId === "end" ? T().askPh : T().ph[k]}">${esc(c.text || "")}</textarea>
       <div class="row"><span class="hint">Ctrl+Enter to add · Esc to cancel</span><button id="ccancel">Cancel</button><button class="primary" id="csave">${c.editId ? "Update" : "Add to review"}</button></div>
     </div></div>`;
   }
@@ -236,6 +261,15 @@
       openComposer = { blockId: t.blockId, quote: t.quote, kind: t.kind, text: t.text, editId: t.id }; renderAll(); focusComposer();
     }));
     document.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => { threads = threads.filter((x) => x.id !== b.dataset.del); renderAll(); }));
+    document.querySelectorAll("[data-sask]").forEach((b) => (b.onclick = () => {
+      const s = suggestions[+b.dataset.sask]; if (!s) return;
+      openComposer = { blockId: "end", quote: "", kind: "question", text: s.title + ": " }; renderAll(); focusComposer();
+    }));
+    document.querySelectorAll("[data-scopy]").forEach((b) => (b.onclick = async () => {
+      const s = suggestions[+b.dataset.scopy]; if (!s) return;
+      try { await navigator.clipboard.writeText(`${T().request(s.title)}. I just finished "${meta.title}". ${s.why}`); setStatus("Copied. Paste it into a Claude chat to start the next one."); }
+      catch (e) { setStatus("Copy was blocked by the browser.", true); }
+    }));
     document.querySelectorAll("[data-send]").forEach((b) => (b.onclick = () => followUp(b.dataset.send)));
     document.querySelectorAll("[data-follow]").forEach((ta) => (ta.onkeydown = (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); followUp(ta.dataset.follow); } }));
   }
@@ -251,7 +285,7 @@
   function renderSide() {
     const pend = threads.filter((t) => t.status === "pending"), done = threads.filter((t) => t.status === "answered");
     $("sPend").textContent = pend.length; $("sDone").textContent = done.length;
-    const order = Object.fromEntries(blocks.map((b, i) => [b.id, i]));
+    const order = Object.fromEntries(blocks.map((b, i) => [b.id, i])); order.end = blocks.length;
     const all = [...threads].sort((a, b) => order[a.blockId] - order[b.blockId]);
     $("list").innerHTML = all.length
       ? all.map((t) => `<div class="item ${t.status === "answered" ? "done" : ""}" data-jump="${t.id}"><span class="dot k-${t.kind}"></span><span class="t">${esc(t.text)}</span>${t.status === "answered" ? '<span style="color:var(--accent)">✓</span>' : ""}</div>`).join("")
@@ -327,6 +361,8 @@ For each item:
     const items = pend.map((t) => ({ id: t.id, block: t.blockId, kind: t.kind, highlighted: t.quote || null, note: t.text }));
     return `${RULES[meta.mode]}
 
+Items on block "end" are about the document as a whole, left after finishing it: answer them at that level and connect them to the wider topic.
+
 Keep each reply to roughly 2–6 sentences. Plain text; \`backticks\` for code identifiers and **bold** sparingly. You may go beyond the document when needed, but say when you do.
 
 Reply with ONLY a JSON object, no prose before or after:
@@ -389,7 +425,7 @@ ${JSON.stringify(items, null, 1)}`;
     t.msgs.push({ role: "you", text }); t.busy = true; renderAll();
     const blk = blocks.find((b) => b.id === t.blockId);
     const role = meta.mode === "learn" ? "a patient, rigorous tutor helping a learner" : "a senior reviewer helping a reader evaluate";
-    const setup = `You are ${role} reading "${meta.title}". They left a ${T().kinds[t.kind].toLowerCase()} on this passage:\n"""${plain(blk ? blk.x : "")}"""${t.quote ? `\nThey highlighted: "${t.quote}"` : ""}\n\nTheir original note: ${t.text}\n\nContinue the thread. Be direct and correct; ${meta.mode === "learn" ? "if they explain something back, tell them precisely what's right and what's off" : "hold your position when you are right and concede clearly when they are"}. 2–6 sentences, plain text, no JSON.`;
+    const setup = `You are ${role} reading "${meta.title}". They left a ${T().kinds[t.kind].toLowerCase()} on this passage:\n"""${blk ? plain(blk.x) : "(the document as a whole)"}"""${t.quote ? `\nThey highlighted: "${t.quote}"` : ""}\n\nTheir original note: ${t.text}\n\nContinue the thread. Be direct and correct; ${meta.mode === "learn" ? "if they explain something back, tell them precisely what's right and what's off" : "hold your position when you are right and concede clearly when they are"}. 2–6 sentences, plain text, no JSON.`;
     const conv = [{ role: "user", content: setup }];
     for (const m of t.msgs) {
       const r = m.role === "ai" ? "assistant" : "user";
@@ -408,12 +444,64 @@ ${JSON.stringify(items, null, 1)}`;
     if (failed) { const box = document.querySelector(`[data-follow="${id}"]`); if (box) { box.value = text; box.focus(); } }
   }
 
+  function renderSuggest() {
+    const box = $("suggest"), btn = $("suggestBtn"); if (!box || !btn) return;
+    btn.style.display = canSample ? "" : "none";
+    btn.disabled = suggesting;
+    btn.textContent = suggestions.length ? "Suggest again" : T().suggest;
+    box.innerHTML = suggesting
+      ? `<div class="card"><div class="msg"><span class="spinner"></span><span style="color:var(--muted)">${T().who} is looking at what you explored…</span></div></div>`
+      : suggestions.map((s, i) => `<div class="card"><div class="msg ai"><div class="meta"><b>${esc(s.title)}</b></div><div class="body">${fmtBody(s.why)}</div>
+          <div class="row"><button class="ghost" data-sask="${i}">Ask about this</button><button data-scopy="${i}">Copy as a request</button></div></div></div>`).join("");
+  }
+
+  async function suggestNext() {
+    const sample = await getSample(); if (!sample || suggesting) return;
+    suggesting = true; renderSuggest();
+    const outline = blocks.filter((b) => b.t === "h1" || b.t === "h2").map((b) => "- " + plain(b.x)).join("\n");
+    const explored = threads.map((t) => {
+      const b = blocks.find((x) => x.id === t.blockId);
+      const where = b ? `"${plain(b.x).slice(0, 140)}"` : "the whole document";
+      const last = (t.msgs || []).filter((m) => m.role === "ai").slice(-1)[0];
+      return `- ${T().kinds[t.kind]} on ${where}: ${t.text}${last ? `\n  (answered: ${last.text.slice(0, 200)})` : ""}`;
+    }).join("\n");
+    const prompt = `${meta.mode === "learn"
+      ? "You are a patient, rigorous tutor. A learner has just finished reading the lesson below."
+      : "You are a senior reviewer. A reader has just finished reviewing the document below."} Suggest 3 to 5 things to ${meta.mode === "learn" ? "learn" : "dig into"} next.
+
+- Base them on what this reader explored: lean toward what their comments show curiosity or confusion about, and toward what the document only touches on.
+- Each must go beyond what the document already covers. Do not summarize the document and do not write quiz questions.
+- title: a topic someone could ask to be taught, under 8 words. why: one or two sentences on why it's the natural next step for this reader.
+
+Reply with ONLY a JSON object, no prose before or after:
+{"topics":[{"title":"...","why":"..."}]}
+
+DOCUMENT: ${meta.title}
+OUTLINE:
+${outline}
+${explored ? `\nWHAT THEY COMMENTED ON:\n${explored}` : "\nThey left no comments, so go by the document."}`;
+    try {
+      const res = await sample(prompt, { modelTier: "default", cache: false });
+      const data = parseJSON(res.text || "");
+      if (!data || !Array.isArray(data.topics)) throw { message: "Could not read the suggestions. Try again." };
+      suggestions = data.topics.map((t) => ({ title: String((t && t.title) || "").trim(), why: String((t && t.why) || "").trim() })).filter((t) => t.title).slice(0, 5);
+    } catch (e) {
+      setStatus(e && e.code === "rate_limited" ? "Rate limited — try again shortly." : esc((e && e.message) || "Suggestions failed."), true);
+    }
+    suggesting = false; renderAll();
+  }
+
   function toMarkdown() {
     const out = [docSrc.trim(), "", "---", "", `## Comments (${meta.mode})`, ""];
     for (const b of blocks) for (const t of threads.filter((x) => x.blockId === b.id)) {
       out.push(`### ${T().kinds[t.kind]} on: ${t.quote ? "“" + t.quote + "”" : plain(b.x).slice(0, 80) + "…"}`, "", `**You:** ${t.text}`, "");
       for (const m of t.msgs || []) out.push(`**${m.role === "ai" ? T().who : "You"}${m.verdict ? " (" + m.verdict + ")" : ""}:** ${m.text}`, "");
     }
+    for (const t of threads.filter((x) => x.blockId === "end")) {
+      out.push(`### ${T().kinds[t.kind]} on the whole document`, "", `**You:** ${t.text}`, "");
+      for (const m of t.msgs || []) out.push(`**${m.role === "ai" ? T().who : "You"}${m.verdict ? " (" + m.verdict + ")" : ""}:** ${m.text}`, "");
+    }
+    if (suggestions.length) { out.push("## Explore next", ""); for (const s of suggestions) out.push(`- **${s.title}**: ${s.why}`); out.push(""); }
     return out.join("\n");
   }
 
@@ -432,7 +520,7 @@ ${JSON.stringify(items, null, 1)}`;
     if (n < 0) { setStatus("That doesn’t look like the JSON answer. Paste the whole reply.", true); return; }
     $("pasteText").value = ""; setStatus(`${n} repl${n === 1 ? "y" : "ies"} added inline.`); renderAll();
   };
-  getSample().then((s) => { if (!s) offline(); });
+  getSample().then((s) => { canSample = !!s; if (!s) offline(); renderSuggest(); });
 
   // ---------- boot ----------
   // A self-contained page sets window.ACTIVE_READER_DOC; a published page serves ./doc.md.
