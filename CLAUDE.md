@@ -2,6 +2,10 @@
 
 This repo holds agent skills, shipped as one Claude Code plugin (`xinnan-skills`) through this repo's own marketplace (`xinnan`).
 
+## Changes go through pull requests
+
+`main` is protected: no direct pushes, no force-pushes, for the owner too. Work on a branch (`fix/...`, `feat/...`, `docs/...`), push it, and open a PR with `gh pr create`. PRs are squash-merged and the branch is deleted after merging. Before starting, `git switch main && git pull` so the branch starts from the latest `main`.
+
 ## Layout
 
 - Each skill is a folder `skills/<skill-name>/` containing `SKILL.md`. The folder name matches the `name` in the frontmatter (lowercase, hyphens). The plugin ships every folder under `skills/`.
