@@ -1,6 +1,6 @@
 {
   "name": "xinnan-skills",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Xinnan's agent skills, including active-reader: learn a topic or review a document, PR-style.",
   "author": {
     "name": "Xinnan Li"

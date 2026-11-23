@@ -3,8 +3,24 @@
 (function () {
   "use strict";
 
+  // ---------- styles ----------
+  // Make sure the fonts and reader.css are loaded from <head>, even if the host
+  // wrapped index.html in another page and its <link>s ended up in <body>.
+  function ensureLink(href, test) {
+    if ([...document.head.querySelectorAll("link[rel=stylesheet]")].some((l) => test(l.getAttribute("href") || ""))) return;
+    const l = document.createElement("link"); l.rel = "stylesheet"; l.href = href; document.head.appendChild(l);
+  }
+  ensureLink("https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap", (h) => h.includes("fonts.googleapis.com"));
+  // A self-contained page (build-page.mjs) inlines the CSS and has no reader.css file.
+  if (typeof window.ACTIVE_READER_DOC !== "string") ensureLink("reader.css", (h) => /(^|\/)reader\.css$/.test(h));
+
   // ---------- shell ----------
-  document.body.innerHTML = `
+  // Mount into our own element. Never replace document.body: that would also
+  // delete any <link> or <script> the page put there.
+  const root = document.createElement("div");
+  root.id = "active-reader";
+  document.body.appendChild(root);
+  root.innerHTML = `
 <header class="top"><div class="topin">
   <div class="brand">Active Reader <span id="docTitle"></span></div>
   <span class="modepill" id="modePill"></span>
