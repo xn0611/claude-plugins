@@ -6,7 +6,7 @@ Small, composable agent skills I use every day. Each skill is a folder with a `S
 
 ### Learning
 
-- **[review-mode](./skills/learning/review-mode/SKILL.md)**: Read any document the way you review a pull request. Leave questions and comments inline with the **+** gutter, keep reading, then submit them all at once and get a reply in each thread. Two modes: **learn** (a tutor explains, re-explains and corrects) and **review** (a senior reviewer assesses design docs, RFCs and specs with Blocking / Should fix / Nit severity).
+- **[active-reader](./skills/learning/active-reader/SKILL.md)**: Learn a topic or review a document the way you review a pull request. Leave questions and comments inline with the **+** gutter, keep reading, then submit them all at once and get a reply in each thread. Two modes: **learn** (a tutor explains, re-explains and corrects) and **review** (a senior reviewer assesses design docs, RFCs and specs with Blocking / Should fix / Nit severity).
 
   Try: "teach me about OpenAPI", or attach a design doc and say "review this with me".
 
@@ -36,7 +36,7 @@ This links every skill outside `deprecated/` into `%USERPROFILE%\.claude\skills`
 Zip a skill and upload it in Claude's skills settings (or ask Claude in a chat to save it for you):
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\package-skill.ps1 review-mode
+powershell -ExecutionPolicy Bypass -File scripts\package-skill.ps1 active-reader
 ```
 
 The zip lands in `dist\`. Re-upload it after changing the skill.
@@ -49,7 +49,7 @@ The zip lands in `dist\`. Re-upload it after changing the skill.
   plugin.json        the plugin, and the exact list of skills it ships
 skills/
   learning/          promoted: shipped in the plugin
-    review-mode/
+    active-reader/
       SKILL.md
       assets/        the reader page (reader.js, reader.css, index.html)
       scripts/       build-page.mjs: builds a self-contained page offline

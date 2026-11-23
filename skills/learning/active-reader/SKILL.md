@@ -1,9 +1,9 @@
 ---
-name: review-mode
-description: Teaches a topic or walks through a document in the Active Reader page, where the user leaves PR-style comments in a + gutter and gets inline replies on submit. Use whenever the user wants to learn a topic ("teach me X", "teach me about X", "help me learn X", "I want to understand X", "give me a lesson on X"), says "review mode", or wants to read or review a design doc, RFC or spec with you; not for a quick factual question, a one-line explanation or debugging.
+name: active-reader
+description: Opens a lesson on a topic, or an existing document, in the Active Reader page so the user reads it actively, leaving PR-style comments in a + gutter and getting inline replies on submit (from a tutor when learning, a reviewer when assessing). Use whenever the user wants to learn a topic ("teach me X", "teach me about X", "help me learn X", "I want to understand X") or read, study or review a document with you (a design doc, RFC, spec or paper; "review this with me", "review mode"); not for a quick factual question, a one-line explanation or debugging.
 ---
 
-# Review mode
+# Active Reader
 
 The user reads a document the way they review a pull request: hover a paragraph and press **+** (or select a phrase) to leave a comment, keep reading while comments stay pending, then press **Finish & submit review**. Each comment gets a reply inline in its thread, and they can reply back in any thread. A side panel lists pending and answered comments and reading progress. Answering in batch is the point: it makes them read actively instead of skimming an answer.
 

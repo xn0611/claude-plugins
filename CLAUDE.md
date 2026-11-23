@@ -21,8 +21,8 @@ This repo holds agent skills, shipped as one Claude Code plugin (`xinnan-skills`
 - A skill must work without this repo being present: everything it needs lives inside its own folder.
 - Any skill that starts a subagent says to start it with a fresh context.
 
-## review-mode specifics
+## active-reader specifics
 
-- The reader page is `skills/learning/review-mode/assets/reader.js` + `reader.css`. Change them only when asked to change how the reader looks or behaves; keep the current visual design.
+- The reader page is `skills/learning/active-reader/assets/reader.js` + `reader.css`. Change them only when asked to change how the reader looks or behaves; keep the current visual design.
 - No quiz and no end-of-document summary: the user removed them on purpose.
-- After changing the assets, rebuild a test page with `node skills/learning/review-mode/scripts/build-page.mjs <some doc.md>` and open it.
+- After changing the assets, rebuild a test page with `node skills/learning/active-reader/scripts/build-page.mjs <some doc.md>` and open it.

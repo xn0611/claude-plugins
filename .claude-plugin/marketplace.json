@@ -8,7 +8,7 @@
     {
       "name": "xinnan-skills",
       "source": "./",
-      "description": "Xinnan's agent skills: review-mode and more to come.",
+      "description": "Xinnan's agent skills: active-reader and more to come.",
       "category": "productivity",
       "keywords": ["skills", "learning", "review"]
     }

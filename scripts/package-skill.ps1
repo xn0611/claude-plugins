@@ -1,5 +1,5 @@
 # Zip one skill folder for upload to claude.ai / the Claude desktop app.
-# Usage: powershell -ExecutionPolicy Bypass -File scripts\package-skill.ps1 review-mode
+# Usage: powershell -ExecutionPolicy Bypass -File scripts\package-skill.ps1 active-reader
 param([Parameter(Mandatory = $true)][string]$Name)
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
