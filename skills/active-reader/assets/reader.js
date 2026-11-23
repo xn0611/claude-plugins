@@ -43,6 +43,9 @@
       <button class="ghost wide" id="finishBtn" style="margin-top:6px">Finish &amp; follow up</button>
       <div class="status" id="status"></div>
       <div class="sub" style="margin:10px 0 0">Answers come from Claude, which can be wrong. Double-check anything important.</div>
+      <div class="sub" id="saveNote" style="margin:6px 0 0"></div>
+      <div id="orphans"></div>
+      <button class="ghost wide" id="clearBtn" style="display:none;margin-top:6px">Clear my comments</button>
       <button class="ghost wide" id="copyBtn" style="display:none;margin-top:6px">Copy review as a prompt</button>
       <div id="pasteBox" style="display:none;margin-top:8px">
         <textarea id="pasteText" placeholder="Paste the JSON answer here…" style="min-height:70px;font-family:'IBM Plex Mono',monospace;font-size:12px"></textarea>
@@ -135,14 +138,172 @@
   let meta = { title: "", mode: "learn", source: "" };
   let docSrc = "", blocks = [], threads = [], maxSeen = 0, openComposer = null;
   let suggestions = [], suggesting = false, finished = false;
+  let stateAt = 0, deletedIds = [];
   const T = () => TEXT[meta.mode];
-  const key = () => "activeReader:" + hash(docSrc);
-  function save() { try { localStorage.setItem(key(), JSON.stringify({ threads, maxSeen, suggestions, finished })); } catch (e) {} }
+  // Saved by document identity (title and mode), not its text, so a revised document
+  // keeps its comments. Older pages saved under a hash of the text: read that too.
+  const key = () => "activeReader:" + (meta.title || "doc").toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 80) + ":" + meta.mode;
+  const legacyKey = () => "activeReader:" + hash(docSrc);
+  function save() { try { localStorage.setItem(key(), JSON.stringify({ threads: threads.map(stored), maxSeen, suggestions, finished, stateAt, deletedIds })); } catch (e) {} }
   function load() {
+    let s = null;
+    try { s = JSON.parse(localStorage.getItem(key()) || "null") || JSON.parse(localStorage.getItem(legacyKey()) || "null"); } catch (e) {}
+    if (!s) return;
+    threads = (s.threads || []).map((t) => ({ ...t, busy: false, sending: false }));
+    maxSeen = s.maxSeen || 0; suggestions = s.suggestions || []; finished = !!s.finished;
+    stateAt = s.stateAt || 0; deletedIds = s.deletedIds || [];
+  }
+  // What is saved for a thread: everything but the in-flight flags and computed placement.
+  function stored(t) { const { busy, sending, orphan, ...rest } = t; return JSON.parse(JSON.stringify(rest)); }
+  const sortThreads = () => threads.sort((a, b) => ((a.createdAt || 0) - (b.createdAt || 0)) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
+  // ---------- anchoring ----------
+  // A thread remembers its block's id and text. If the document was revised, it is
+  // re-placed by its quote, then by the same text, then by the most similar block;
+  // one that can't be placed is shown under "From an earlier version".
+  const textOf = (b) => (b.t === "code" ? b.x : plain(b.x).replace(/\*/g, "")).replace(/\s+/g, " ").trim();
+  const words = (s) => new Set(s.toLowerCase().match(/[a-z0-9]+/g) || []);
+  function similarity(a, b) {
+    const A = words(a), B = words(b); if (!A.size || !B.size) return 0;
+    let n = 0; for (const w of A) if (B.has(w)) n++;
+    return n / (A.size + B.size - n);
+  }
+  function anchor(t) {
+    if (t.blockId === "end") { t.orphan = false; return false; }
+    const cur = blocks.find((b) => b.id === t.blockId);
+    if (cur && (!t.blockText || textOf(cur) === t.blockText)) {
+      t.orphan = false;
+      if (!t.blockText) { t.blockText = textOf(cur); return true; } // saved before anchors had text
+      return false;
+    }
+    const was = parseInt(String(t.blockId).slice(1), 10) || 0;
+    const near = (list) => list.sort((a, b) => Math.abs(parseInt(a.id.slice(1), 10) - was) - Math.abs(parseInt(b.id.slice(1), 10) - was))[0];
+    const q = (t.quote || "").replace(/\s+/g, " ").trim();
+    let hit = q ? near(blocks.filter((b) => textOf(b).includes(q))) : null;
+    if (!hit && t.blockText) hit = near(blocks.filter((b) => textOf(b) === t.blockText));
+    if (!hit && t.blockText) {
+      let best = 0;
+      for (const b of blocks) { const s = similarity(textOf(b), t.blockText); if (s > best) { best = s; hit = b; } }
+      if (best < 0.5) hit = null;
+    }
+    if (!hit) { t.orphan = true; return false; }
+    t.orphan = false; t.blockId = hit.id; t.blockText = textOf(hit);
+    return true;
+  }
+  function anchorAll() { for (const t of threads) if (anchor(t)) touch(t); }
+
+  // ---------- saving with the page ----------
+  // A published page keeps each viewer's threads in the artifact's db, under their own
+  // private path, so they last across browsers and devices. localStorage stays as the
+  // cache, and as the only store where db isn't available (signed out, a view-only
+  // viewer, a self-contained page).
+  let store = null, storeReady = false, storeWritable = true, stateTimer = null, stateBusy = false, stateAgain = false;
+  const writing = new Map();
+  function saveNote(where) {
+    const n = $("saveNote"); if (!n) return;
+    n.textContent = where === "account"
+      ? "Your comments are saved with this page, for you only, so they are here when you come back on any device."
+      : where === "waiting"
+        ? "Your saved comments can’t be reached yet; showing the ones in this browser."
+        : "Your comments are saved in this browser only.";
+  }
+  const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+  async function dbCall(fn) {
+    try { return await fn(); }
+    catch (e) { if (e && e.code === "unavailable") { await pause(500 + Math.random() * 1000); return fn(); } throw e; }
+  }
+  function storeFail(e) {
+    const c = e && e.code;
+    if (c === "quota_exceeded") { setStatus("This page’s storage is full, so new comments are kept in this browser only.", true); return; }
+    if (c === "resource_exhausted" || c === "unavailable") return; // a later change saves again
+    storeWritable = false; saveNote("browser"); // can't write here (e.g. a view-only viewer)
+  }
+  function touch(t) { t.updatedAt = Date.now(); writeThread(t.id); }
+  // One write at a time per thread; a change made meanwhile is written right after.
+  async function writeThread(id) {
+    if (!storeReady || !storeWritable) return;
+    const w = writing.get(id); if (w) { w.again = true; return; }
+    writing.set(id, { again: false });
     try {
-      const s = JSON.parse(localStorage.getItem(key()) || "null");
-      if (s) { threads = (s.threads || []).map((t) => ({ ...t, busy: false, sending: false })); maxSeen = s.maxSeen || 0; suggestions = s.suggestions || []; finished = !!s.finished; }
-    } catch (e) {}
+      for (;;) {
+        const t = threads.find((x) => x.id === id);
+        if (t) await dbCall(() => store.threads.doc(id).set(stored(t)));
+        else { await dbCall(() => store.threads.doc(id).delete()); deletedIds = deletedIds.filter((x) => x !== id); save(); }
+        const st = writing.get(id); if (!st.again) break; st.again = false;
+      }
+    } catch (e) { storeFail(e); }
+    writing.delete(id);
+  }
+  function touchState() { stateAt = Date.now(); clearTimeout(stateTimer); stateTimer = setTimeout(writeState, 1500); }
+  async function writeState() {
+    if (!storeReady || !storeWritable) return;
+    if (stateBusy) { stateAgain = true; return; }
+    stateBusy = true;
+    try { do { stateAgain = false; await dbCall(() => store.state.set({ maxSeen, finished, suggestions, updatedAt: stateAt })); } while (stateAgain); }
+    catch (e) { storeFail(e); }
+    stateBusy = false;
+  }
+  function removeThread(id) {
+    threads = threads.filter((x) => x.id !== id);
+    if (!deletedIds.includes(id)) deletedIds.push(id);
+    renderAll(); writeThread(id);
+  }
+
+  function mergeThreads(snap) {
+    let changed = false;
+    for (const ch of snap.docChanges()) {
+      const id = ch.doc.id, i = threads.findIndex((x) => x.id === id), t = threads[i];
+      if (ch.type === "removed") {
+        if (!snap.metadata.fromCache && t && !t.sending && !t.busy) { threads.splice(i, 1); changed = true; }
+        continue;
+      }
+      const r = ch.doc.data(); if (!r || deletedIds.includes(id)) continue;
+      if (!t) { const n = { ...r, id, busy: false, sending: false }; threads.push(n); anchor(n); changed = true; }
+      else if ((r.updatedAt || 0) > (t.updatedAt || 0) && !t.sending && !t.busy) { Object.assign(t, r); anchor(t); changed = true; }
+    }
+    return changed;
+  }
+  function mergeState(d) {
+    if (!d) return false;
+    let changed = false;
+    if ((d.maxSeen || 0) > maxSeen) { maxSeen = d.maxSeen; changed = true; }
+    if (d.finished && !finished) { finished = true; changed = true; }
+    if ((d.updatedAt || 0) > stateAt && Array.isArray(d.suggestions)) { suggestions = d.suggestions; stateAt = d.updatedAt; changed = true; }
+    return changed;
+  }
+
+  async function initStore() {
+    if (standalone || !(window.claude && window.claude.use)) { saveNote("browser"); return; }
+    saveNote("browser");
+    let db = null, user = null, uid = null;
+    try { [db, user] = await Promise.all([window.claude.use("db"), window.claude.use("user")]); } catch (e) {}
+    try { if (db && user) uid = await user.id(); } catch (e) {}
+    if (!uid) return;
+    try { const base = db.doc("data/users/" + uid + "/reader"); store = { state: base, threads: base.collection("threads") }; } catch (e) { return; }
+    const timer = setTimeout(() => { if (!storeReady) saveNote("waiting"); }, 10000);
+    let stateSeen = false;
+    store.threads.onSnapshot((snap) => {
+      const changed = mergeThreads(snap);
+      if (!storeReady && !snap.metadata.fromCache) {
+        storeReady = true; clearTimeout(timer); if (storeWritable) saveNote("account");
+        // Send up what only this browser has: older comments, and changes made offline.
+        const remote = new Map(snap.docs.map((d) => [d.id, d.data() || {}]));
+        for (const t of threads) { const r = remote.get(t.id); if (!r || (t.updatedAt || 0) > (r.updatedAt || 0)) writeThread(t.id); }
+        for (const id of deletedIds) if (remote.has(id)) writeThread(id); else deletedIds = deletedIds.filter((x) => x !== id);
+        if (stateSeen) writeState();
+      }
+      if (changed) { sortThreads(); renderAll(); }
+    }, (e) => { clearTimeout(timer); storeFail(e); });
+    store.state.onSnapshot((snap) => {
+      const d = snap.exists ? snap.data() : null;
+      const changed = mergeState(d);
+      if (!snap.metadata.fromCache && !stateSeen) {
+        stateSeen = true;
+        const behind = !d || maxSeen > (d.maxSeen || 0) || (finished && !d.finished) || stateAt > (d.updatedAt || 0);
+        if (behind) { if (!stateAt) stateAt = Date.now(); if (storeReady) writeState(); }
+      }
+      if (changed) { updProg(); renderAll(); }
+    }, () => {});
   }
 
   // ---------- render ----------
@@ -190,7 +351,7 @@
   function renderAll() {
     for (const b of blocks) {
       const el = $(b.id); if (!el) continue;
-      const ts = threads.filter((t) => t.blockId === b.id);
+      const ts = threads.filter((t) => t.blockId === b.id && !t.orphan);
       el.classList.toggle("has", ts.length > 0);
       el.querySelector(".threads").innerHTML =
         ts.map(threadHTML).join("") + (openComposer && openComposer.blockId === b.id && !openComposer.editId ? composerHTML(openComposer) : "");
@@ -205,7 +366,7 @@
     if (endEl) endEl.style.display = finished ? "" : "none";
     if ($("submit2")) $("submit2").style.display = finished ? "none" : "";
     renderSuggest();
-    wire(); renderSide(); save();
+    renderSide(); wire(); save();
   }
 
   function highlight(el, b, ts) {
@@ -270,7 +431,7 @@
       const t = threads.find((x) => x.id === b.dataset.edit);
       openComposer = { blockId: t.blockId, quote: t.quote, kind: t.kind, text: t.text, editId: t.id }; renderAll(); focusComposer();
     }));
-    document.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => { threads = threads.filter((x) => x.id !== b.dataset.del); renderAll(); }));
+    document.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => removeThread(b.dataset.del)));
     document.querySelectorAll("[data-sask]").forEach((b) => (b.onclick = () => {
       const s = suggestions[+b.dataset.sask]; if (!s) return;
       openComposer = { blockId: "end", quote: "", kind: "question", text: s.title + ": " }; renderAll(); focusComposer();
@@ -290,8 +451,12 @@
     const text = $("ctext").value.trim(); if (!text) { $("ctext").focus(); return; }
     let t;
     if (openComposer.editId) { t = threads.find((x) => x.id === openComposer.editId); t.text = text; t.kind = openComposer.kind; }
-    else { t = { id: "c" + Date.now().toString(36), blockId: openComposer.blockId, quote: openComposer.quote || "", kind: openComposer.kind || "question", text, status: "pending", msgs: [] }; threads.push(t); }
-    openComposer = null; renderAll();
+    else {
+      const b = blocks.find((x) => x.id === openComposer.blockId);
+      t = { id: "c" + Date.now().toString(36), blockId: openComposer.blockId, blockText: b ? textOf(b) : "", quote: openComposer.quote || "", kind: openComposer.kind || "question", text, status: "pending", msgs: [], docHash: hash(docSrc), createdAt: Date.now() };
+      threads.push(t);
+    }
+    openComposer = null; touch(t); renderAll();
     if (!standalone) ask([t]); // answered right away; the reader keeps going while it replies
   }
 
@@ -299,7 +464,12 @@
     const pend = threads.filter((t) => t.status === "pending"), done = threads.filter((t) => t.status === "answered");
     $("sPend").textContent = pend.length; $("sDone").textContent = done.length;
     const order = Object.fromEntries(blocks.map((b, i) => [b.id, i])); order.end = blocks.length;
-    const all = [...threads].sort((a, b) => order[a.blockId] - order[b.blockId]);
+    const all = threads.filter((t) => !t.orphan).sort((a, b) => order[a.blockId] - order[b.blockId]);
+    const lost = threads.filter((t) => t.orphan);
+    $("orphans").innerHTML = lost.length
+      ? `<div class="sub" style="margin:12px 0 6px"><b>From an earlier version</b>: the passages these were left on have changed, so they can’t be placed in the text.</div>` + lost.map(orphanHTML).join("")
+      : "";
+    $("clearBtn").style.display = threads.length ? "" : "none";
     $("list").innerHTML = all.length
       ? all.map((t) => `<div class="item ${t.status === "answered" ? "done" : ""}" data-jump="${t.id}"><span class="dot k-${t.kind}"></span><span class="t">${esc(t.text)}</span>${t.status === "answered" ? '<span style="color:var(--accent)">✓</span>' : ""}</div>`).join("")
       : `<div class="empty">${T().empty}</div>`;
@@ -314,6 +484,13 @@
     $("finishBtn").textContent = finished ? "Go deeper ↓" : "Finish & follow up";
   }
 
+  function orphanHTML(t) {
+    let h = `<div class="card" id="card-${t.id}"><div class="msg"><div class="meta"><b>You</b><span class="badge k-${t.kind}">${T().kinds[t.kind]}</span><div class="acts"><button class="ghost" data-del="${t.id}">Delete</button></div></div>
+      ${t.quote || t.blockText ? `<div class="quote">“${esc(t.quote || String(t.blockText).slice(0, 160) + "…")}”</div>` : ""}<div class="body">${fmtBody(t.text)}</div></div>`;
+    for (const m of t.msgs || []) h += `<div class="msg${m.role === "ai" ? " ai" : ""}"><div class="meta"><b>${m.role === "ai" ? T().who : "You"}</b></div><div class="body">${fmtBody(m.text)}</div></div>`;
+    return h + "</div>";
+  }
+
   // ---------- reading progress ----------
   let io;
   function observe() {
@@ -321,7 +498,7 @@
     io = new IntersectionObserver((es) => {
       for (const e of es) if (e.isIntersecting) {
         const i = blocks.findIndex((b) => b.id === e.target.id);
-        if (i + 1 > maxSeen) { maxSeen = i + 1; updProg(); save(); }
+        if (i + 1 > maxSeen) { maxSeen = i + 1; updProg(); save(); touchState(); }
       }
     }, { threshold: 0.6 });
     blocks.forEach((b) => io.observe($(b.id))); updProg();
@@ -434,7 +611,7 @@ ${JSON.stringify(items, null, 1)}`;
     let n = 0;
     for (const r of data.replies) {
       const t = threads.find((x) => x.id === r.id);
-      if (t && t.status === "pending") { t.msgs.push({ role: "ai", text: r.reply || "", verdict: r.verdict || "" }); t.status = "answered"; n++; }
+      if (t && t.status === "pending") { t.msgs.push({ role: "ai", text: r.reply || "", verdict: r.verdict || "" }); t.status = "answered"; touch(t); n++; }
     }
     return n;
   }
@@ -463,7 +640,7 @@ ${JSON.stringify(items, null, 1)}`;
   }
 
   function finish() {
-    finished = true; renderAll();
+    finished = true; touchState(); renderAll();
     $("end").scrollIntoView({ behavior: "smooth", block: "start" });
     ask(threads.filter((t) => t.status === "pending"));
   }
@@ -491,7 +668,7 @@ ${JSON.stringify(items, null, 1)}`;
       setStatus(e && e.code === "rate_limited" ? "Rate limited — try again shortly." : esc((e && e.message) || "Reply failed."), true);
     }
     const failed = t.msgs[t.msgs.length - 1].role !== "ai";
-    t.busy = false; renderAll();
+    t.busy = false; if (!failed) touch(t); renderAll();
     if (failed) { const box = document.querySelector(`[data-follow="${id}"]`); if (box) { box.value = text; box.focus(); } }
   }
 
@@ -537,6 +714,7 @@ ${explored ? `\nWHAT THEY COMMENTED ON:\n${explored}` : "\nThey left no comments
       const data = parseJSON(res.text || "");
       if (!data || !Array.isArray(data.topics)) throw { message: "Could not read the suggestions. Try again." };
       suggestions = data.topics.map((t) => ({ title: String((t && t.title) || "").trim(), why: String((t && t.why) || "").trim() })).filter((t) => t.title).slice(0, 5);
+      touchState();
     } catch (e) {
       setStatus(e && e.code === "rate_limited" ? "Rate limited — try again shortly." : esc((e && e.message) || "Suggestions failed."), true);
     }
@@ -545,12 +723,16 @@ ${explored ? `\nWHAT THEY COMMENTED ON:\n${explored}` : "\nThey left no comments
 
   function toMarkdown() {
     const out = [docSrc.trim(), "", "---", "", `## Comments (${meta.mode})`, ""];
-    for (const b of blocks) for (const t of threads.filter((x) => x.blockId === b.id)) {
+    for (const b of blocks) for (const t of threads.filter((x) => x.blockId === b.id && !x.orphan)) {
       out.push(`### ${T().kinds[t.kind]} on: ${t.quote ? "“" + t.quote + "”" : plain(b.x).slice(0, 80) + "…"}`, "", `**You:** ${t.text}`, "");
       for (const m of t.msgs || []) out.push(`**${m.role === "ai" ? T().who : "You"}${m.verdict ? " (" + m.verdict + ")" : ""}:** ${m.text}`, "");
     }
     for (const t of threads.filter((x) => x.blockId === "end")) {
       out.push(`### ${T().kinds[t.kind]} on the whole document`, "", `**You:** ${t.text}`, "");
+      for (const m of t.msgs || []) out.push(`**${m.role === "ai" ? T().who : "You"}${m.verdict ? " (" + m.verdict + ")" : ""}:** ${m.text}`, "");
+    }
+    for (const t of threads.filter((x) => x.orphan)) {
+      out.push(`### ${T().kinds[t.kind]} from an earlier version, on: “${t.quote || String(t.blockText || "").slice(0, 80) + "…"}”`, "", `**You:** ${t.text}`, "");
       for (const m of t.msgs || []) out.push(`**${m.role === "ai" ? T().who : "You"}${m.verdict ? " (" + m.verdict + ")" : ""}:** ${m.text}`, "");
     }
     if (suggestions.length) { out.push("## Explore next", ""); for (const s of suggestions) out.push(`- **${s.title}**: ${s.why}`); out.push(""); }
@@ -576,6 +758,21 @@ ${explored ? `\nWHAT THEY COMMENTED ON:\n${explored}` : "\nThey left no comments
     if (n < 0) { setStatus("That doesn’t look like the JSON answer. Paste the whole reply.", true); return; }
     $("pasteText").value = ""; setStatus(`${n} repl${n === 1 ? "y" : "ies"} added inline.`); renderAll();
   };
+  // Two presses: the first asks to confirm, the second clears.
+  let clearArmed = null;
+  $("clearBtn").onclick = () => {
+    if (!clearArmed) {
+      $("clearBtn").textContent = "Press again to delete all your comments";
+      clearArmed = setTimeout(() => { clearArmed = null; $("clearBtn").textContent = "Clear my comments"; }, 4000);
+      return;
+    }
+    clearTimeout(clearArmed); clearArmed = null; $("clearBtn").textContent = "Clear my comments";
+    const ids = threads.map((t) => t.id);
+    threads = []; openComposer = null;
+    for (const id of ids) if (!deletedIds.includes(id)) deletedIds.push(id);
+    renderAll(); ids.forEach(writeThread);
+    setStatus("Your comments were deleted.");
+  };
   getSample(); // warm up; a miss here is retried on the next comment
 
   // ---------- boot ----------
@@ -583,6 +780,9 @@ ${explored ? `\nWHAT THEY COMMENTED ON:\n${explored}` : "\nThey left no comments
   (typeof window.ACTIVE_READER_DOC === "string"
     ? Promise.resolve(window.ACTIVE_READER_DOC)
     : fetch("doc.md", { cache: "no-store" }).then((r) => { if (!r.ok) throw new Error(r.status); return r.text(); }))
-    .then((text) => { const p = parseFront(text); meta = p.meta; docSrc = p.body; load(); renderDoc(); })
+    .then((text) => {
+      const p = parseFront(text); meta = p.meta; docSrc = p.body;
+      blocks = parseDoc(docSrc); load(); anchorAll(); sortThreads(); renderDoc(); initStore();
+    })
     .catch(() => { $("doc").innerHTML = '<div class="loading">Couldn’t load doc.md for this page.</div>'; });
 })();
