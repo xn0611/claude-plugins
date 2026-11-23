@@ -21,7 +21,7 @@ From inside Claude Code:
 /plugin install xinnan-skills@xinnan
 ```
 
-Once this repo is on GitHub, others can use `/plugin marketplace add <github-user>/claude-plugins` instead.
+Or straight from GitHub: `/plugin marketplace add xn0611/claude-plugins`.
 
 ### Claude Code: linked straight from this folder (edits apply immediately)
 

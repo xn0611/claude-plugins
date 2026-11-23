@@ -110,7 +110,7 @@
   function load() {
     try {
       const s = JSON.parse(localStorage.getItem(key()) || "null");
-      if (s) { threads = s.threads || []; maxSeen = s.maxSeen || 0; }
+      if (s) { threads = (s.threads || []).map((t) => ({ ...t, busy: false })); maxSeen = s.maxSeen || 0; }
     } catch (e) {}
   }
 
@@ -163,12 +163,14 @@
     const cnt = el.querySelector(".cnt"); cnt.innerHTML = blockHTML(b);
     const quotes = ts.map((t) => t.quote).filter(Boolean);
     if (!quotes.length) return;
-    const walker = document.createTreeWalker(cnt, NodeFilter.SHOW_TEXT);
-    const nodes = []; while (walker.nextNode()) nodes.push(walker.currentNode);
-    for (const q of quotes) for (const n of nodes) {
+    for (const q of quotes) {
+      const walker = document.createTreeWalker(cnt, NodeFilter.SHOW_TEXT);
+      const nodes = []; while (walker.nextNode()) nodes.push(walker.currentNode);
+      for (const n of nodes) {
       const i = n.nodeValue.indexOf(q); if (i < 0 || !n.parentNode) continue;
       const r = document.createRange(); r.setStart(n, i); r.setEnd(n, i + q.length);
       const m = document.createElement("mark"); m.className = "q"; try { r.surroundContents(m); } catch (e) {} break;
+      }
     }
   }
 
@@ -385,7 +387,9 @@ ${JSON.stringify(items, null, 1)}`;
       t.msgs.pop();
       setStatus(e && e.code === "rate_limited" ? "Rate limited — try again shortly." : esc((e && e.message) || "Reply failed."), true);
     }
+    const failed = t.msgs[t.msgs.length - 1].role !== "ai";
     t.busy = false; renderAll();
+    if (failed) { const box = document.querySelector(`[data-follow="${id}"]`); if (box) { box.value = text; box.focus(); } }
   }
 
   function toMarkdown() {

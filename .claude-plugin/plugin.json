@@ -1,6 +1,6 @@
 {
   "name": "xinnan-skills",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Xinnan's agent skills: review-mode (read and review any document PR-style) and more to come.",
   "author": {
     "name": "Xinnan Li"
