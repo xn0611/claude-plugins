@@ -34,13 +34,15 @@
       <h3>Your review</h3>
       <div class="sub" id="howto"></div>
       <div class="stats">
-        <div class="stat"><b id="sPend">0</b><span>pending</span></div>
+        <div class="stat"><b id="sPend">0</b><span>waiting</span></div>
         <div class="stat"><b id="sDone">0</b><span>answered</span></div>
         <div class="stat"><b id="sRead">0%</b><span>read</span></div>
       </div>
       <div class="list" id="list"></div>
-      <button class="primary wide" id="submitBtn" disabled>Finish &amp; submit review</button>
+      <button class="primary wide" id="submitBtn" disabled>Get answers</button>
+      <button class="ghost wide" id="finishBtn" style="margin-top:6px">Finish &amp; follow up</button>
       <div class="status" id="status"></div>
+      <div class="sub" style="margin:10px 0 0">Answers come from Claude, which can be wrong. Double-check anything important.</div>
       <button class="ghost wide" id="copyBtn" style="display:none;margin-top:6px">Copy review as a prompt</button>
       <div id="pasteBox" style="display:none;margin-top:8px">
         <textarea id="pasteText" placeholder="Paste the JSON answer here…" style="min-height:70px;font-family:'IBM Plex Mono',monospace;font-size:12px"></textarea>
@@ -102,9 +104,11 @@
     learn: {
       kinds: { question: "Question", comment: "Comment", confused: "Not clear to me" },
       ph: { question: "What are you wondering about?", comment: "Your thought, connection or objection…", confused: "Which part loses you?" },
-      howto: "Hover any paragraph and press <b>+</b>, or select a phrase, to leave a question or comment. Keep reading — nothing is sent until you submit.",
+      howto: "Hover any paragraph and press <b>+</b>, or select a phrase, to leave a question or comment. Each one is answered right away; keep reading while the tutor replies.",
+      howtoOffline: "Hover any paragraph and press <b>+</b>, or select a phrase, to leave a question or comment. They queue up here; press <b>Get answers</b> to copy them as a prompt for Claude.",
       empty: "No comments yet. When something surprises you, confuses you, or reminds you of something, leave a note.",
       who: "Tutor",
+      send: "Get answers",
       follow: "Push back, ask for an example, or explain it back in your own words.",
       deeper: "Finished? Ask a question about the topic as a whole, or let the tutor suggest what to learn next from what you explored.",
       askPh: "A broader question: how this connects to something else, when you'd reach for it, what comes after it…",
@@ -114,9 +118,11 @@
     review: {
       kinds: { question: "Question", comment: "Suggestion", confused: "Concern" },
       ph: { question: "What does the doc leave unclear?", comment: "What would you change, and why?", confused: "What could go wrong here?" },
-      howto: "Hover any paragraph and press <b>+</b>, or select a phrase, to leave a question, suggestion or concern. Keep reading — nothing is sent until you submit.",
+      howto: "Hover any paragraph and press <b>+</b>, or select a phrase, to leave a question, suggestion or concern. Each one is answered right away; keep reading while the reviewer replies.",
+      howtoOffline: "Hover any paragraph and press <b>+</b>, or select a phrase, to leave a question, suggestion or concern. They queue up here; press <b>Get replies</b> to copy them as a prompt for Claude.",
       empty: "No comments yet. Flag anything unclear, risky, missing or worth changing.",
       who: "Reviewer",
+      send: "Get replies",
       follow: "Push back, add context, or ask how the author should fix it.",
       deeper: "Finished? Comment on the document as a whole, or let the reviewer suggest what to dig into next from what you flagged.",
       askPh: "About the whole document: the overall approach, what's missing, alternatives worth weighing…",
@@ -127,15 +133,15 @@
 
   // ---------- state ----------
   let meta = { title: "", mode: "learn", source: "" };
-  let docSrc = "", blocks = [], threads = [], maxSeen = 0, openComposer = null, busy = false;
-  let suggestions = [], suggesting = false;
+  let docSrc = "", blocks = [], threads = [], maxSeen = 0, openComposer = null;
+  let suggestions = [], suggesting = false, finished = false;
   const T = () => TEXT[meta.mode];
   const key = () => "activeReader:" + hash(docSrc);
-  function save() { try { localStorage.setItem(key(), JSON.stringify({ threads, maxSeen, suggestions })); } catch (e) {} }
+  function save() { try { localStorage.setItem(key(), JSON.stringify({ threads, maxSeen, suggestions, finished })); } catch (e) {} }
   function load() {
     try {
       const s = JSON.parse(localStorage.getItem(key()) || "null");
-      if (s) { threads = (s.threads || []).map((t) => ({ ...t, busy: false })); maxSeen = s.maxSeen || 0; suggestions = s.suggestions || []; }
+      if (s) { threads = (s.threads || []).map((t) => ({ ...t, busy: false, sending: false })); maxSeen = s.maxSeen || 0; suggestions = s.suggestions || []; finished = !!s.finished; }
     } catch (e) {}
   }
 
@@ -155,7 +161,7 @@
     document.title = meta.title + " — Active Reader";
     $("modePill").textContent = meta.mode === "learn" ? "Learn" : "Review";
     $("modePill").className = "modepill " + meta.mode;
-    $("howto").innerHTML = T().howto;
+    $("howto").innerHTML = standalone ? T().howtoOffline : T().howto;
     const doc = $("doc"); doc.innerHTML = "";
     if (meta.source) { const s = document.createElement("div"); s.className = "srcline"; s.textContent = meta.source; doc.appendChild(s); }
     for (const b of blocks) {
@@ -165,10 +171,11 @@
       doc.appendChild(el);
     }
     const end = document.createElement("div"); end.className = "endmark";
-    end.innerHTML = `<span>End of document.</span><button class="primary" id="submit2">Submit my review</button>`;
+    end.innerHTML = `<span>End of document.</span><button class="primary" id="submit2">Finish &amp; follow up</button>`;
     doc.appendChild(end);
-    $("submit2").onclick = submitReview;
+    $("submit2").onclick = finish;
     // "Go deeper": comments on the document as a whole (block id "end") and suggested next topics.
+    // Hidden until the reader presses Finish & follow up.
     const deep = document.createElement("div"); deep.className = "blk deeper"; deep.id = "end"; deep.dataset.id = "end";
     deep.innerHTML = `<div class="gut"></div><div class="cnt"><h2>Go deeper</h2><p class="deeper-sub">${T().deeper}</p></div><div></div>
       <div class="threads"></div>
@@ -195,6 +202,8 @@
       endEl.querySelector(".threads").innerHTML =
         ts.map(threadHTML).join("") + (openComposer && openComposer.blockId === "end" && !openComposer.editId ? composerHTML(openComposer) : "");
     }
+    if (endEl) endEl.style.display = finished ? "" : "none";
+    if ($("submit2")) $("submit2").style.display = finished ? "none" : "";
     renderSuggest();
     wire(); renderSide(); save();
   }
@@ -219,14 +228,15 @@
     const editing = openComposer && openComposer.editId === t.id;
     let h = `<div class="card" id="card-${t.id}">`;
     if (editing) h += composerHTML(openComposer);
-    else h += `<div class="msg"><div class="meta"><b>You</b><span class="badge k-${t.kind}">${T().kinds[t.kind]}</span>${t.status === "pending" ? '<span class="pending-tag">Pending</span>' : ""}
-      <div class="acts">${t.status === "pending" ? `<button class="ghost" data-edit="${t.id}">Edit</button><button class="ghost" data-del="${t.id}">Delete</button>` : ""}</div></div>
+    else h += `<div class="msg"><div class="meta"><b>You</b><span class="badge k-${t.kind}">${T().kinds[t.kind]}</span>${t.status === "pending" && !t.sending ? `<span class="pending-tag">${standalone ? "Queued" : "Not sent"}</span>` : ""}
+      <div class="acts">${t.status === "pending" && !t.sending ? `${standalone ? "" : `<button class="ghost" data-ask="${t.id}">Send</button>`}<button class="ghost" data-edit="${t.id}">Edit</button><button class="ghost" data-del="${t.id}">Delete</button>` : ""}</div></div>
       ${t.quote ? `<div class="quote">“${esc(t.quote)}”</div>` : ""}<div class="body">${fmtBody(t.text)}</div></div>`;
     for (const m of t.msgs || []) {
       h += m.role === "ai"
         ? `<div class="msg ai"><div class="meta"><b>${T().who}</b>${m.verdict ? `<span class="badge v">${esc(m.verdict)}</span>` : ""}</div><div class="body">${fmtBody(m.text)}</div></div>`
         : `<div class="msg"><div class="meta"><b>You</b><span>follow-up</span></div><div class="body">${fmtBody(m.text)}</div></div>`;
     }
+    if (t.sending) h += `<div class="msg"><span class="spinner"></span><span style="color:var(--muted)">${T().who} is replying…</span></div>`;
     if (t.status === "answered") {
       h += t.busy
         ? `<div class="msg"><span class="spinner"></span><span style="color:var(--muted)">${T().who} is replying…</span></div>`
@@ -242,7 +252,7 @@
       ${c.quote ? `<div class="quote">“${esc(c.quote)}”</div>` : ""}
       <div class="kinds">${Object.keys(T().kinds).map((x) => `<button class="k-${x} ${x === k ? "on" : ""}" data-kind="${x}">${T().kinds[x]}</button>`).join("")}</div>
       <textarea id="ctext" placeholder="${c.blockId === "end" ? T().askPh : T().ph[k]}">${esc(c.text || "")}</textarea>
-      <div class="row"><span class="hint">Ctrl+Enter to add · Esc to cancel</span><button id="ccancel">Cancel</button><button class="primary" id="csave">${c.editId ? "Update" : "Add to review"}</button></div>
+      <div class="row"><span class="hint">Ctrl+Enter to add · Esc to cancel</span><button id="ccancel">Cancel</button><button class="primary" id="csave">${c.editId ? "Update" : standalone ? "Add to queue" : "Ask"}</button></div>
     </div></div>`;
   }
 
@@ -270,6 +280,7 @@
       try { await navigator.clipboard.writeText(`${T().request(s.title)}. I just finished "${meta.title}". ${s.why}`); setStatus("Copied. Paste it into a Claude chat to start the next one."); }
       catch (e) { setStatus("Copy was blocked by the browser.", true); }
     }));
+    document.querySelectorAll("[data-ask]").forEach((b) => (b.onclick = () => ask([threads.find((x) => x.id === b.dataset.ask)])));
     document.querySelectorAll("[data-send]").forEach((b) => (b.onclick = () => followUp(b.dataset.send)));
     document.querySelectorAll("[data-follow]").forEach((ta) => (ta.onkeydown = (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); followUp(ta.dataset.follow); } }));
   }
@@ -277,9 +288,11 @@
   function openFor(blockId, quote) { openComposer = { blockId, quote, kind: "question", text: "" }; renderAll(); focusComposer(); }
   function saveComposer() {
     const text = $("ctext").value.trim(); if (!text) { $("ctext").focus(); return; }
-    if (openComposer.editId) { const t = threads.find((x) => x.id === openComposer.editId); t.text = text; t.kind = openComposer.kind; }
-    else threads.push({ id: "c" + Date.now().toString(36), blockId: openComposer.blockId, quote: openComposer.quote || "", kind: openComposer.kind || "question", text, status: "pending", msgs: [] });
+    let t;
+    if (openComposer.editId) { t = threads.find((x) => x.id === openComposer.editId); t.text = text; t.kind = openComposer.kind; }
+    else { t = { id: "c" + Date.now().toString(36), blockId: openComposer.blockId, quote: openComposer.quote || "", kind: openComposer.kind || "question", text, status: "pending", msgs: [] }; threads.push(t); }
     openComposer = null; renderAll();
+    if (!standalone) ask([t]); // answered right away; the reader keeps going while it replies
   }
 
   function renderSide() {
@@ -294,9 +307,11 @@
       const c = $("card-" + n.dataset.jump);
       if (c) { c.scrollIntoView({ behavior: "smooth", block: "center" }); c.classList.remove("flash"); void c.offsetWidth; c.classList.add("flash"); }
     }));
-    $("submitBtn").disabled = busy || !pend.length;
-    $("submitBtn").textContent = busy ? "Reviewing…" : pend.length ? `Finish & submit review (${pend.length})` : "Finish & submit review";
-    if ($("submit2")) $("submit2").disabled = busy || !pend.length;
+    const idle = pend.filter((t) => !t.sending);
+    $("submitBtn").style.display = standalone || idle.length ? "" : "none";
+    $("submitBtn").disabled = !idle.length;
+    $("submitBtn").textContent = standalone ? (idle.length ? `${T().send} (${idle.length})` : T().send) : `Send again (${idle.length})`;
+    $("finishBtn").textContent = finished ? "Go deeper ↓" : "Finish & follow up";
   }
 
   // ---------- reading progress ----------
@@ -371,7 +386,7 @@ For each item:
 
 Items on block "end" are about the document as a whole, left after finishing it: answer them at that level and connect them to the wider topic.
 
-Keep each reply to roughly 2–6 sentences. Plain text; \`backticks\` for code identifiers and **bold** sparingly. You may go beyond the document when needed, but say when you do.
+Keep each reply to roughly 2–6 sentences. Plain text; \`backticks\` for code identifiers and **bold** sparingly. You may go beyond the document when needed, but say when you do. You have no web access. If an answer depends on something that changes over time (versions, prices, current products, recent events), say so and suggest checking a current source.
 
 Reply with ONLY a JSON object, no prose before or after:
 {"replies":[{"id":"...","verdict":"...","reply":"..."}]}
@@ -403,29 +418,31 @@ ${JSON.stringify(items, null, 1)}`;
 
   function offline() { $("copyBtn").style.display = "block"; $("pasteBox").style.display = "block"; }
 
-  async function submitReview() {
-    const pend = threads.filter((t) => t.status === "pending"); if (!pend.length) return;
-    if (standalone) { offline(); await copyPrompt(pend); return; }
-    setStatus(`<span class="spinner"></span>Connecting to Claude…`);
+  // Send comments to Claude: each new comment on its own, with the whole document.
+  // "Send" / "Send again" retry ones that didn't go through. A self-contained page
+  // can't call Claude, so there this copies them as a prompt instead.
+  async function ask(list) {
+    list = list.filter((t) => t && t.status === "pending" && !t.sending); if (!list.length) return;
+    if (standalone) { offline(); await copyPrompt(list); return; }
+    list.forEach((t) => (t.sending = true)); renderAll();
     const sample = await getSample();
-    if (!sample) { offline(); setStatus(NOT_YET, true); return; }
-    busy = true; renderSide();
-    const left = blocks.length - maxSeen;
-    setStatus(`<span class="spinner"></span>Reviewing your ${pend.length} comment${pend.length > 1 ? "s" : ""}…${left > 0 ? ` (${left} block${left > 1 ? "s" : ""} not read yet)` : ""}`);
+    if (!sample) { list.forEach((t) => (t.sending = false)); offline(); setStatus(NOT_YET, true); renderAll(); return; }
     try {
-      const res = await sample(buildPrompt(pend), { modelTier: "default", cache: false });
-      const n = applyReplies(res.text || "");
-      if (n < 0) throw { message: "Could not read the reply. Try submitting again." };
-      setStatus(`${n} repl${n === 1 ? "y" : "ies"} added inline. Reply in any thread to keep going.`);
-      busy = false; renderAll();
-      const first = pend.find((t) => t.status === "answered");
-      if (first) { const c = $("card-" + first.id); c && c.scrollIntoView({ behavior: "smooth", block: "center" }); }
+      const res = await sample(buildPrompt(list), { modelTier: "default", cache: false });
+      if (applyReplies(res.text || "") < 0) throw { message: "Could not read the reply. Press <b>Send</b> on the comment to try again." };
+      setStatus("");
     } catch (e) {
-      busy = false; renderSide();
       if (e && e.code === "not_granted") { setStatus("Permission to ask Claude was declined. You can copy the review as a prompt instead.", true); offline(); }
-      else if (e && e.code === "rate_limited") setStatus("Rate limited — wait a minute and submit again.", true);
-      else setStatus(esc((e && e.message) || "Something went wrong."), true);
+      else if (e && e.code === "rate_limited") setStatus("Rate limited — wait a minute, then press <b>Send</b> on the comment.", true);
+      else setStatus(e && e.message ? (e.message.includes("<b>") ? e.message : esc(e.message)) : "Something went wrong.", true);
     }
+    list.forEach((t) => (t.sending = false)); renderAll();
+  }
+
+  function finish() {
+    finished = true; renderAll();
+    $("end").scrollIntoView({ behavior: "smooth", block: "start" });
+    ask(threads.filter((t) => t.status === "pending"));
   }
 
   async function followUp(id) {
@@ -435,7 +452,7 @@ ${JSON.stringify(items, null, 1)}`;
     t.msgs.push({ role: "you", text }); t.busy = true; renderAll();
     const blk = blocks.find((b) => b.id === t.blockId);
     const role = meta.mode === "learn" ? "a patient, rigorous tutor helping a learner" : "a senior reviewer helping a reader evaluate";
-    const setup = `You are ${role} reading "${meta.title}". They left a ${T().kinds[t.kind].toLowerCase()} on this passage:\n"""${blk ? plain(blk.x) : "(the document as a whole)"}"""${t.quote ? `\nThey highlighted: "${t.quote}"` : ""}\n\nTheir original note: ${t.text}\n\nContinue the thread. Be direct and correct; ${meta.mode === "learn" ? "if they explain something back, tell them precisely what's right and what's off" : "hold your position when you are right and concede clearly when they are"}. 2–6 sentences, plain text, no JSON.`;
+    const setup = `You are ${role} reading the document below.\n\nDOCUMENT: ${meta.title}\n${docForPrompt()}\n\nThey left a ${T().kinds[t.kind].toLowerCase()} on block [${t.blockId}]:\n"""${blk ? plain(blk.x) : "(the document as a whole)"}"""${t.quote ? `\nThey highlighted: "${t.quote}"` : ""}\n\nTheir original note: ${t.text}\n\nContinue the thread. Be direct and correct; ${meta.mode === "learn" ? "if they explain something back, tell them precisely what's right and what's off" : "hold your position when you are right and concede clearly when they are"}. 2–6 sentences, plain text, no JSON. You have no web access. If an answer depends on something that changes over time (versions, prices, current products, recent events), say so and suggest checking a current source.`;
     const conv = [{ role: "user", content: setup }];
     for (const m of t.msgs) {
       const r = m.role === "ai" ? "assistant" : "user";
@@ -516,7 +533,8 @@ ${explored ? `\nWHAT THEY COMMENTED ON:\n${explored}` : "\nThey left no comments
     return out.join("\n");
   }
 
-  $("submitBtn").onclick = submitReview;
+  $("submitBtn").onclick = () => ask(threads.filter((t) => t.status === "pending"));
+  $("finishBtn").onclick = () => (finished ? $("end").scrollIntoView({ behavior: "smooth", block: "start" }) : finish());
   async function copyPrompt(pend) {
     if (!pend.length) { setStatus("No pending comments to copy. Add a comment first.", true); return; }
     try {

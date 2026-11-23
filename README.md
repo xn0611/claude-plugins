@@ -4,7 +4,7 @@ Agent skills I use every day, shipped as one Claude Code plugin.
 
 ## Skills
 
-- **[active-reader](./skills/active-reader/SKILL.md)**: Learn a topic or review a document the way you review a pull request. Leave comments with the **+** gutter, keep reading, then submit them all at once and get a reply in each thread. A tutor answers when you're learning; a senior reviewer (Blocking / Should fix / Nit) answers when you're reviewing a design doc, RFC or spec.
+- **[active-reader](./skills/active-reader/SKILL.md)**: Learn a topic or review a document the way you review a pull request. Leave comments with the **+** gutter and each one gets a reply in its thread right away while you keep reading. **Finish & follow up** opens Go deeper. A tutor answers when you're learning; a senior reviewer (Blocking / Should fix / Nit) answers when you're reviewing a design doc, RFC or spec.
 
   Try: "teach me about OpenAPI", or attach a design doc and say "review this with me".
 
@@ -34,8 +34,8 @@ Rough figures for active-reader, at about 4 characters per token.
 
 **In the page** (counts against your claude.ai usage, not the session)
 
-- **Submit: ~3,000–4,000 tokens in** per round, because it sends the whole document once plus your new comments. Replies are a few hundred tokens per comment. Batch your comments: ten comments in one submit send the document once.
-- **Replying in a thread: ~500 tokens**, because it sends only that passage and that thread.
+- **Each comment: ~3,000–4,000 tokens in**, because it sends the whole document with it, so the answer has full context. Replies are a few hundred tokens each.
+- **Replying in a thread: ~3,000–4,000 tokens**, because it also sends the whole document, plus that thread.
 - **Go deeper suggestions: ~1,000–2,000 tokens**, because it sends the headings and your comments, not the whole document.
 
 **The expensive case:** without an Artifact tool, the page can't call Claude. You copy the review as a prompt into chat, which puts the whole document back into the conversation on every round.

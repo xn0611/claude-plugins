@@ -5,7 +5,7 @@ description: Opens a lesson on a topic, or an existing document, in the Active R
 
 # Active Reader
 
-The user reads a document the way they review a pull request: hover a paragraph and press **+** (or select a phrase) to leave a comment, keep reading while comments stay pending, then press **Finish & submit review**. Each comment gets a reply inline in its thread, and they can reply back in any thread. A side panel lists pending and answered comments and reading progress. At the end, a **Go deeper** section takes questions about the document as a whole and, on request, suggests what to learn or dig into next, based on what they commented on. Answering in batch is the point: it makes them read actively instead of skimming an answer.
+The user reads a document the way they review a pull request: hover a paragraph and press **+** (or select a phrase) to leave a comment. Each comment is answered inline in its thread right away, with the whole document as context, while they keep reading; they can reply back in any thread. A side panel tracks waiting and answered comments and reading progress. When they are done, **Finish & follow up** opens a **Go deeper** section that takes questions about the document as a whole and, on request, suggests what to learn or dig into next, based on what they commented on.
 
 The reader is already built. It lives in `assets/` next to this file: `reader.js` (all behaviour, including the tutor and reviewer prompts), `reader.css` (the design) and `index.html` (a tiny loader). Never rewrite or regenerate them. Each session only supplies a document. Do not add a quiz or an end-of-document summary.
 
@@ -44,7 +44,7 @@ Make one folder for this document, outside the user's project unless they name a
 **A. An Artifact tool is available (claude.ai, the desktop app, Claude Code signed in to claude.ai).** Always prefer this path: the page gets live answers.
 
 1. Copy `assets/reader.js` and `assets/reader.css` into that folder with a shell copy (`cp`), never by reading them into the conversation. The publish tool may not be able to read this skill's own folder. Then write `index.html` there: a copy of `assets/index.html` with `<title>Active Reader</title>` changed to `<title><document title></title>` (escape `&` and `<`). The page's `<title>` names the artifact, and a title passed to the publish call is ignored.
-2. Publish it with the Artifact tool: the page is that `index.html`, icon `book`, and files `reader.js`, `reader.css` and `doc.md` (content type `text/markdown`), all from that folder. The tool reads them from disk, so the reader's code never passes through the conversation.
+2. Publish it with the Artifact tool: the page is that `index.html`, icon `book`, and files `reader.js`, `reader.css` and `doc.md` (content type `text/markdown`), all from that folder. Pass the folder as `root` and the files by name. On Windows, use the folder's long path, not an 8.3 short form with a `~1` segment such as `JOHNDO~1` (`cygpath -l -w <folder>` prints it): a short-form path may not match the allowed scratchpad, and the publish is then blocked by a Read permission rule. The tool reads them from disk, so the reader's code never passes through the conversation.
 3. Turn on live answers by declaring the `sample` capability, `{"sample": {}}`. If the publish call takes capabilities, pass it there. Otherwise declare it with the tool's capability call right after publishing (read the declaration first if the tool asks). Only then give the user the link. Don't open a local browser.
 
 **B. No Artifact tool (other agents).** Build one self-contained page and open it:
@@ -53,11 +53,11 @@ Make one folder for this document, outside the user's project unless they name a
 node <this skill's folder>/scripts/build-page.mjs doc.md review.html
 ```
 
-Open the HTML in their browser (`start review.html` on Windows, `open` on macOS, `xdg-open` on Linux). This page cannot call a model itself, so Submit copies the review as a prompt instead. Tell the user the loop: submit, paste the prompt here, then paste your JSON answer into the box on the page.
+Open the HTML in their browser (`start review.html` on Windows, `open` on macOS, `xdg-open` on Linux). This page cannot call a model itself, so comments queue and **Get answers** copies them as a prompt instead. Tell the user the loop: copy, paste the prompt here, then paste your JSON answer into the box on the page.
 
 Either way, give the user the link or file in one or two sentences. Do not pre-answer anything.
 
-## 4. After they submit
+## 4. Afterwards
 
 When the user pastes a copied review prompt (path B), answer it exactly as it asks: a single JSON object `{"replies":[{"id","verdict","reply"}]}` with one reply per comment id, in a fenced `json` block and nothing else, so they can paste it straight back.
 
