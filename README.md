@@ -19,6 +19,6 @@ Agent skills I use every day, shipped as one Claude Code plugin.
 
 **Claude Code (from this folder, while editing):** `claude --plugin-dir G:/projects/claude-plugins`.
 
-**claude.ai and the desktop app:** run `scripts\package-skill.ps1 active-reader` and upload `dist\active-reader.zip` in Claude's skills settings.
+**claude.ai and the desktop app:** zip the `skills/active-reader` folder (right-click → Send to → Compressed (zipped) folder) and upload it in Claude's skills settings.
 
 See [CLAUDE.md](./CLAUDE.md) for the rules when adding a skill.
