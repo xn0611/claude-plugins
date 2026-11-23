@@ -21,4 +21,23 @@ Agent skills I use every day, shipped as one Claude Code plugin.
 
 **claude.ai and the desktop app:** zip the `skills/active-reader` folder (right-click → Send to → Compressed (zipped) folder) and upload it in Claude's skills settings.
 
+## Token cost
+
+Rough figures for active-reader, at about 4 characters per token.
+
+**In your Claude session**
+
+- **Description: ~150 tokens**, loaded in every session whether or not the skill runs. This is the only always-on cost.
+- **`SKILL.md`: ~1,600 tokens**, loaded only when the skill starts. The claude.ai loader adds ~500 more, plus a silent `git clone`.
+- **Writing the lesson: ~1,500–3,000 output tokens** for 900–1,800 words. This is the biggest cost, and about what the same answer would cost in chat.
+- **Publishing: close to zero.** `reader.js` and `reader.css` (~10,500 tokens) are published straight from disk and never enter the conversation.
+
+**In the page** (counts against your claude.ai usage, not the session)
+
+- **Submit: ~3,000–4,000 tokens in** per round, because it sends the whole document once plus your new comments. Replies are a few hundred tokens per comment. Batch your comments: ten comments in one submit send the document once.
+- **Replying in a thread: ~500 tokens**, because it sends only that passage and that thread.
+- **Go deeper suggestions: ~1,000–2,000 tokens**, because it sends the headings and your comments, not the whole document.
+
+**The expensive case:** without an Artifact tool, the page can't call Claude. You copy the review as a prompt into chat, which puts the whole document back into the conversation on every round.
+
 See [CLAUDE.md](./CLAUDE.md) for the rules when adding a skill.
