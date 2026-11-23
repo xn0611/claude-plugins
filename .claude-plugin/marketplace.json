@@ -3,14 +3,11 @@
   "owner": {
     "name": "Xinnan Li"
   },
-  "description": "Xinnan's skills, as an installable Claude Code plugin.",
   "plugins": [
     {
       "name": "xinnan-skills",
       "source": "./",
-      "description": "Xinnan's agent skills: active-reader and more to come.",
-      "category": "productivity",
-      "keywords": ["skills", "learning", "review"]
+      "description": "Xinnan's agent skills."
     }
   ]
 }

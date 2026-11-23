@@ -1,64 +1,24 @@
 # Xinnan's skills
 
-Small, composable agent skills I use every day. Each skill is a folder with a `SKILL.md` (and any assets or scripts it needs), so they work in Claude Code, claude.ai and any agent that reads Agent Skills.
+Agent skills I use every day, shipped as one Claude Code plugin.
 
 ## Skills
 
-### Learning
-
-- **[active-reader](./skills/learning/active-reader/SKILL.md)**: Learn a topic or review a document the way you review a pull request. Leave questions and comments inline with the **+** gutter, keep reading, then submit them all at once and get a reply in each thread. Two modes: **learn** (a tutor explains, re-explains and corrects) and **review** (a senior reviewer assesses design docs, RFCs and specs with Blocking / Should fix / Nit severity).
+- **[active-reader](./skills/active-reader/SKILL.md)**: Learn a topic or review a document the way you review a pull request. Leave comments with the **+** gutter, keep reading, then submit them all at once and get a reply in each thread. A tutor answers when you're learning; a senior reviewer (Blocking / Should fix / Nit) answers when you're reviewing a design doc, RFC or spec.
 
   Try: "teach me about OpenAPI", or attach a design doc and say "review this with me".
 
 ## Install
 
-### Claude Code: as a plugin (updates with `git pull` + reinstall)
-
-From inside Claude Code:
+**Claude Code (plugin):**
 
 ```
-/plugin marketplace add G:/projects/claude-plugins
+/plugin marketplace add xn0611/claude-plugins
 /plugin install xinnan-skills@xinnan
 ```
 
-Or straight from GitHub: `/plugin marketplace add xn0611/claude-plugins`.
+**Claude Code (from this folder, while editing):** `claude --plugin-dir G:/projects/claude-plugins`.
 
-### Claude Code: linked straight from this folder (edits apply immediately)
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\link-skills.ps1
-```
-
-This links every skill outside `deprecated/` into `%USERPROFILE%\.claude\skills` with directory junctions (no admin rights needed). Re-run it after adding or renaming a skill. Use either the plugin or the links, not both, or every skill shows up twice.
-
-### claude.ai and the Claude desktop app
-
-Zip a skill and upload it in Claude's skills settings (or ask Claude in a chat to save it for you):
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\package-skill.ps1 active-reader
-```
-
-The zip lands in `dist\`. Re-upload it after changing the skill.
-
-## Layout
-
-```
-.claude-plugin/
-  marketplace.json   this repo as a plugin marketplace
-  plugin.json        the plugin, and the exact list of skills it ships
-skills/
-  learning/          promoted: shipped in the plugin
-    active-reader/
-      SKILL.md
-      assets/        the reader page (reader.js, reader.css, index.html)
-      scripts/       build-page.mjs: builds a self-contained page offline
-  in-progress/       beta: linked locally, not shipped in the plugin
-  deprecated/        no longer used
-scripts/
-  link-skills.ps1    link skills into ~/.claude/skills (Windows)
-  link-skills.sh     same, macOS/Linux
-  package-skill.ps1  zip one skill for claude.ai upload
-```
+**claude.ai and the desktop app:** run `scripts\package-skill.ps1 active-reader` and upload `dist\active-reader.zip` in Claude's skills settings.
 
 See [CLAUDE.md](./CLAUDE.md) for the rules when adding a skill.
