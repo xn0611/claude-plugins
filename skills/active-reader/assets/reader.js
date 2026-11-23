@@ -398,7 +398,7 @@ ${JSON.stringify(items, null, 1)}`;
   async function submitReview() {
     const pend = threads.filter((t) => t.status === "pending"); if (!pend.length) return;
     const sample = await getSample();
-    if (!sample) { offline(); setStatus("Copy the review as a prompt, paste it into Claude, then paste Claude’s JSON answer below."); return; }
+    if (!sample) { offline(); await copyPrompt(pend); return; }
     busy = true; renderSide();
     const left = blocks.length - maxSeen;
     setStatus(`<span class="spinner"></span>Reviewing your ${pend.length} comment${pend.length > 1 ? "s" : ""}…${left > 0 ? ` (${left} block${left > 1 ? "s" : ""} not read yet)` : ""}`);
@@ -421,7 +421,7 @@ ${JSON.stringify(items, null, 1)}`;
   async function followUp(id) {
     const t = threads.find((x) => x.id === id); const ta = document.querySelector(`[data-follow="${id}"]`);
     const text = ta && ta.value.trim(); if (!text) return;
-    const sample = await getSample(); if (!sample) { setStatus("Asking Claude isn’t available in this view.", true); return; }
+    const sample = await getSample(); if (!sample) { setStatus("Replying in a thread needs Claude in the page. Use <b>Copy as Markdown</b> and paste it into Claude to keep going.", true); return; }
     t.msgs.push({ role: "you", text }); t.busy = true; renderAll();
     const blk = blocks.find((b) => b.id === t.blockId);
     const role = meta.mode === "learn" ? "a patient, rigorous tutor helping a learner" : "a senior reviewer helping a reader evaluate";
@@ -506,11 +506,14 @@ ${explored ? `\nWHAT THEY COMMENTED ON:\n${explored}` : "\nThey left no comments
   }
 
   $("submitBtn").onclick = submitReview;
-  $("copyBtn").onclick = async () => {
-    const pend = threads.filter((t) => t.status === "pending");
-    try { await navigator.clipboard.writeText(buildPrompt(pend.length ? pend : threads)); setStatus("Copied. Paste it into a Claude chat."); }
-    catch (e) { setStatus("Copy was blocked by the browser.", true); }
-  };
+  async function copyPrompt(pend) {
+    if (!pend.length) { setStatus("No pending comments to copy. Add a comment first.", true); return; }
+    try {
+      await navigator.clipboard.writeText(buildPrompt(pend));
+      setStatus(`Copied ${pend.length} comment${pend.length > 1 ? "s" : ""} as a prompt. Paste it into Claude, then paste its JSON answer below.`);
+    } catch (e) { setStatus("Copy was blocked by the browser. Try <b>Copy review as a prompt</b> again.", true); }
+  }
+  $("copyBtn").onclick = () => copyPrompt(threads.filter((t) => t.status === "pending"));
   $("copyMdBtn").onclick = async () => {
     try { await navigator.clipboard.writeText(toMarkdown()); setStatus("Copied the document with your comments and answers as Markdown."); }
     catch (e) { setStatus("Copy was blocked by the browser.", true); }
