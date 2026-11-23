@@ -360,6 +360,29 @@
   };
   const NOT_YET = "Couldn’t reach Claude yet. Try again in a moment, or copy the review as a prompt.";
 
+  // use("sample") answers null without saying why. The permissions API can tell
+  // "not allowed yet" (ask now: this runs from a click), "declined" and "not switched
+  // on yet" (a page opened right after publishing) apart, without prompting.
+  async function sampleOrWhy() {
+    const s = await getSample(); if (s) return { sample: s };
+    if (standalone || !(window.claude && window.claude.use)) return { why: NOT_YET };
+    let perms = null, st = "unavailable";
+    try { perms = await window.claude.use("permissions"); if (perms) st = await perms.state("sample"); } catch (e) {}
+    if (st === "prompt") {
+      try { const r = await perms.request(["sample"]); st = (r && r.sample) || st; } catch (e) {}
+      if (st === "granted") { const s2 = await getSample(); if (s2) return { sample: s2 }; }
+    }
+    if (st === "denied") return { why: `You turned off use of Claude for this page. <button class="ghost" id="permBtn">Open permissions</button> to turn it back on, then try again.`, perms };
+    if (st === "prompt") return { why: "Answers need your OK to use Claude. Try again and choose <b>Allow</b> when claude.ai asks." };
+    if (st === "granted") return { why: NOT_YET };
+    return { why: "Live answers aren’t switched on for this page yet; it may have just been published. Wait a moment and try again." };
+  }
+  function showWhy(w) {
+    setStatus(w.why, true);
+    const b = $("permBtn");
+    if (b && w.perms) b.onclick = () => w.perms.manage().catch(() => setStatus("Open the page’s <b>Permissions</b> menu to turn use of Claude back on.", true));
+  }
+
   const RULES = {
     learn: `You are a patient, rigorous tutor. A learner just read the document below and, like a code reviewer leaving comments on a pull request, attached questions and comments to specific blocks (ids in brackets). Respond so their understanding gets deeper, not just to hand over facts.
 
@@ -425,8 +448,8 @@ ${JSON.stringify(items, null, 1)}`;
     list = list.filter((t) => t && t.status === "pending" && !t.sending); if (!list.length) return;
     if (standalone) { offline(); await copyPrompt(list); return; }
     list.forEach((t) => (t.sending = true)); renderAll();
-    const sample = await getSample();
-    if (!sample) { list.forEach((t) => (t.sending = false)); offline(); setStatus(NOT_YET, true); renderAll(); return; }
+    const got = await sampleOrWhy(), sample = got.sample;
+    if (!sample) { list.forEach((t) => (t.sending = false)); offline(); renderAll(); showWhy(got); return; }
     try {
       const res = await sample(buildPrompt(list), { modelTier: "default", cache: false });
       if (applyReplies(res.text || "") < 0) throw { message: "Could not read the reply. Press <b>Send</b> on the comment to try again." };
@@ -448,7 +471,8 @@ ${JSON.stringify(items, null, 1)}`;
   async function followUp(id) {
     const t = threads.find((x) => x.id === id); const ta = document.querySelector(`[data-follow="${id}"]`);
     const text = ta && ta.value.trim(); if (!text) return;
-    const sample = await getSample(); if (!sample) { setStatus(standalone ? "Replying in a thread needs Claude in the page. Use <b>Copy as Markdown</b> and paste it into Claude to keep going." : NOT_YET, true); return; }
+    if (standalone) { setStatus("Replying in a thread needs Claude in the page. Use <b>Copy as Markdown</b> and paste it into Claude to keep going.", true); return; }
+    const got = await sampleOrWhy(), sample = got.sample; if (!sample) { showWhy(got); return; }
     t.msgs.push({ role: "you", text }); t.busy = true; renderAll();
     const blk = blocks.find((b) => b.id === t.blockId);
     const role = meta.mode === "learn" ? "a patient, rigorous tutor helping a learner" : "a senior reviewer helping a reader evaluate";
@@ -484,7 +508,7 @@ ${JSON.stringify(items, null, 1)}`;
 
   async function suggestNext() {
     if (suggesting) return;
-    const sample = await getSample(); if (!sample) { setStatus(NOT_YET, true); return; }
+    const got = await sampleOrWhy(), sample = got.sample; if (!sample) { showWhy(got); return; }
     suggesting = true; renderSuggest();
     const outline = blocks.filter((b) => b.t === "h1" || b.t === "h2").map((b) => "- " + plain(b.x)).join("\n");
     const explored = threads.map((t) => {
@@ -552,7 +576,7 @@ ${explored ? `\nWHAT THEY COMMENTED ON:\n${explored}` : "\nThey left no comments
     if (n < 0) { setStatus("That doesn’t look like the JSON answer. Paste the whole reply.", true); return; }
     $("pasteText").value = ""; setStatus(`${n} repl${n === 1 ? "y" : "ies"} added inline.`); renderAll();
   };
-  getSample(); // warm up; a miss here is retried on the next Submit
+  getSample(); // warm up; a miss here is retried on the next comment
 
   // ---------- boot ----------
   // A self-contained page sets window.ACTIVE_READER_DOC; a published page serves ./doc.md.
