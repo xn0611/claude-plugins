@@ -17,7 +17,7 @@ Agent skills I use every day, shipped as one Claude Code plugin.
 /plugin install xinnan-skills@xinnan
 ```
 
-**Claude Code (from this folder, while editing):** `claude --plugin-dir G:/projects/claude-plugins`.
+**Claude Code (from a clone, while editing):** `git clone https://github.com/xn0611/claude-plugins.git`, then `claude --plugin-dir claude-plugins`.
 
 **claude.ai and the desktop app:** zip the `skills/active-reader` folder (right-click → Send to → Compressed (zipped) folder) and upload it in Claude's skills settings.
 
@@ -40,4 +40,6 @@ Rough figures for active-reader, at about 4 characters per token.
 
 **The expensive case:** without an Artifact tool, the page can't call Claude. You copy the review as a prompt into chat, which puts the whole document back into the conversation on every round.
 
-See [CLAUDE.md](./CLAUDE.md) for the rules when adding a skill.
+## Contributing
+
+Issues and pull requests are welcome. `main` only changes through pull requests. See [CLAUDE.md](./CLAUDE.md) for the rules when adding or changing a skill.
