@@ -39,12 +39,12 @@ For a lesson: one focused document, roughly 900 to 1,800 words unless asked othe
 
 ## 3. Open the page
 
-Write `doc.md` (and `index.html` for path A) in a scratch or temp folder, not the user's project, unless the user names a place. Then pick the path that matches the tools you have.
+Make one folder for this document, outside the user's project unless they name a place: the session's scratchpad directory if it has one, otherwise a scratch folder in the home directory such as `~/active-reader/<slug>/`. Not `/tmp`: some publish tools refuse files there. Write `doc.md` in it. Then pick the path that matches the tools you have.
 
 **A. An Artifact tool is available (claude.ai, the desktop app, Claude Code signed in to claude.ai).** Always prefer this path: the page gets live answers.
 
-1. Write `index.html` next to `doc.md`: a copy of `assets/index.html` with `<title>Active Reader</title>` changed to `<title><document title></title>` (escape `&` and `<`). The page's `<title>` names the artifact, and a title passed to the publish call is ignored.
-2. Publish it with the Artifact tool: the page is that `index.html`, icon `book`, and files `reader.js` and `reader.css` from `assets/` plus `doc.md` (content type `text/markdown`). The tool reads the files from disk, so the reader's code never passes through the conversation.
+1. Copy `assets/reader.js` and `assets/reader.css` into that folder with a shell copy (`cp`), never by reading them into the conversation. The publish tool may not be able to read this skill's own folder. Then write `index.html` there: a copy of `assets/index.html` with `<title>Active Reader</title>` changed to `<title><document title></title>` (escape `&` and `<`). The page's `<title>` names the artifact, and a title passed to the publish call is ignored.
+2. Publish it with the Artifact tool: the page is that `index.html`, icon `book`, and files `reader.js`, `reader.css` and `doc.md` (content type `text/markdown`), all from that folder. The tool reads them from disk, so the reader's code never passes through the conversation.
 3. Turn on live answers by declaring the `sample` capability, `{"sample": {}}`. If the publish call takes capabilities, pass it there. Otherwise declare it with the tool's capability call right after publishing (read the declaration first if the tool asks). Only then give the user the link. Don't open a local browser.
 
 **B. No Artifact tool (other agents).** Build one self-contained page and open it:
