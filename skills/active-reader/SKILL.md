@@ -44,7 +44,8 @@ Write `doc.md` (and `index.html` for path A) in a scratch or temp folder, not th
 **A. An Artifact tool is available (claude.ai, the desktop app, Claude Code signed in to claude.ai).** Always prefer this path: the page gets live answers.
 
 1. Write `index.html` next to `doc.md`: a copy of `assets/index.html` with `<title>Active Reader</title>` changed to `<title><document title></title>` (escape `&` and `<`). The page's `<title>` names the artifact, and a title passed to the publish call is ignored.
-2. Publish it in one Artifact call: the page is that `index.html`, icon `book`, capabilities `{"sample": {}}` (so Submit can ask Claude), and files `reader.js` and `reader.css` from `assets/` plus `doc.md` (content type `text/markdown`). The tool reads the files from disk, so the reader's code never passes through the conversation. Don't open a local browser.
+2. Publish it with the Artifact tool: the page is that `index.html`, icon `book`, and files `reader.js` and `reader.css` from `assets/` plus `doc.md` (content type `text/markdown`). The tool reads the files from disk, so the reader's code never passes through the conversation.
+3. Turn on live answers by declaring the `sample` capability, `{"sample": {}}`. If the publish call takes capabilities, pass it there. Otherwise declare it with the tool's capability call right after publishing (read the declaration first if the tool asks). Only then give the user the link. Don't open a local browser.
 
 **B. No Artifact tool (other agents).** Build one self-contained page and open it:
 

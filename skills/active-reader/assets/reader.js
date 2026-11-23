@@ -128,7 +128,7 @@
   // ---------- state ----------
   let meta = { title: "", mode: "learn", source: "" };
   let docSrc = "", blocks = [], threads = [], maxSeen = 0, openComposer = null, busy = false;
-  let suggestions = [], suggesting = false, canSample = false;
+  let suggestions = [], suggesting = false;
   const T = () => TEXT[meta.mode];
   const key = () => "activeReader:" + hash(docSrc);
   function save() { try { localStorage.setItem(key(), JSON.stringify({ threads, maxSeen, suggestions })); } catch (e) {} }
@@ -331,11 +331,19 @@
   $("selBtn").onclick = () => { pop.style.display = "none"; if (selInfo) { openFor(selInfo.blockId, selInfo.quote); window.getSelection().removeAllRanges(); } };
 
   // ---------- LLM ----------
+  // A self-contained page (build-page.mjs) never has Claude. A published page can get it
+  // a moment after it loads (live answers may be turned on just after publishing), so a
+  // miss is never cached: the next Submit, reply or suggestion asks again.
+  const standalone = typeof window.ACTIVE_READER_DOC === "string";
   let samplePromise = null;
   const getSample = () => {
-    if (!samplePromise) samplePromise = (window.claude && window.claude.use ? window.claude.use("sample") : Promise.resolve(null)).catch(() => null);
+    if (standalone) return Promise.resolve(null);
+    if (!samplePromise) samplePromise = (window.claude && window.claude.use ? window.claude.use("sample") : Promise.resolve(null))
+      .catch(() => null)
+      .then((s) => { if (!s) samplePromise = null; return s; });
     return samplePromise;
   };
+  const NOT_YET = "Couldn’t reach Claude yet. Try again in a moment, or copy the review as a prompt.";
 
   const RULES = {
     learn: `You are a patient, rigorous tutor. A learner just read the document below and, like a code reviewer leaving comments on a pull request, attached questions and comments to specific blocks (ids in brackets). Respond so their understanding gets deeper, not just to hand over facts.
@@ -397,8 +405,10 @@ ${JSON.stringify(items, null, 1)}`;
 
   async function submitReview() {
     const pend = threads.filter((t) => t.status === "pending"); if (!pend.length) return;
+    if (standalone) { offline(); await copyPrompt(pend); return; }
+    setStatus(`<span class="spinner"></span>Connecting to Claude…`);
     const sample = await getSample();
-    if (!sample) { offline(); await copyPrompt(pend); return; }
+    if (!sample) { offline(); setStatus(NOT_YET, true); return; }
     busy = true; renderSide();
     const left = blocks.length - maxSeen;
     setStatus(`<span class="spinner"></span>Reviewing your ${pend.length} comment${pend.length > 1 ? "s" : ""}…${left > 0 ? ` (${left} block${left > 1 ? "s" : ""} not read yet)` : ""}`);
@@ -421,7 +431,7 @@ ${JSON.stringify(items, null, 1)}`;
   async function followUp(id) {
     const t = threads.find((x) => x.id === id); const ta = document.querySelector(`[data-follow="${id}"]`);
     const text = ta && ta.value.trim(); if (!text) return;
-    const sample = await getSample(); if (!sample) { setStatus("Replying in a thread needs Claude in the page. Use <b>Copy as Markdown</b> and paste it into Claude to keep going.", true); return; }
+    const sample = await getSample(); if (!sample) { setStatus(standalone ? "Replying in a thread needs Claude in the page. Use <b>Copy as Markdown</b> and paste it into Claude to keep going." : NOT_YET, true); return; }
     t.msgs.push({ role: "you", text }); t.busy = true; renderAll();
     const blk = blocks.find((b) => b.id === t.blockId);
     const role = meta.mode === "learn" ? "a patient, rigorous tutor helping a learner" : "a senior reviewer helping a reader evaluate";
@@ -446,7 +456,7 @@ ${JSON.stringify(items, null, 1)}`;
 
   function renderSuggest() {
     const box = $("suggest"), btn = $("suggestBtn"); if (!box || !btn) return;
-    btn.style.display = canSample ? "" : "none";
+    btn.style.display = standalone ? "none" : "";
     btn.disabled = suggesting;
     btn.textContent = suggestions.length ? "Suggest again" : T().suggest;
     box.innerHTML = suggesting
@@ -456,7 +466,8 @@ ${JSON.stringify(items, null, 1)}`;
   }
 
   async function suggestNext() {
-    const sample = await getSample(); if (!sample || suggesting) return;
+    if (suggesting) return;
+    const sample = await getSample(); if (!sample) { setStatus(NOT_YET, true); return; }
     suggesting = true; renderSuggest();
     const outline = blocks.filter((b) => b.t === "h1" || b.t === "h2").map((b) => "- " + plain(b.x)).join("\n");
     const explored = threads.map((t) => {
@@ -523,7 +534,7 @@ ${explored ? `\nWHAT THEY COMMENTED ON:\n${explored}` : "\nThey left no comments
     if (n < 0) { setStatus("That doesn’t look like the JSON answer. Paste the whole reply.", true); return; }
     $("pasteText").value = ""; setStatus(`${n} repl${n === 1 ? "y" : "ies"} added inline.`); renderAll();
   };
-  getSample().then((s) => { canSample = !!s; if (!s) offline(); renderSuggest(); });
+  getSample(); // warm up; a miss here is retried on the next Submit
 
   // ---------- boot ----------
   // A self-contained page sets window.ACTIVE_READER_DOC; a published page serves ./doc.md.
