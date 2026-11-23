@@ -1,0 +1,13 @@
+{
+  "name": "xinnan-skills",
+  "version": "0.1.0",
+  "description": "Xinnan's agent skills: review-mode (read and review any document PR-style) and more to come.",
+  "author": {
+    "name": "Xinnan Li"
+  },
+  "license": "MIT",
+  "keywords": ["skills", "learning", "review", "reading"],
+  "skills": [
+    "./skills/learning/review-mode"
+  ]
+}
