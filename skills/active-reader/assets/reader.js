@@ -149,13 +149,14 @@
     let s = null;
     try { s = JSON.parse(localStorage.getItem(key()) || "null") || JSON.parse(localStorage.getItem(legacyKey()) || "null"); } catch (e) {}
     if (!s) return;
-    threads = (s.threads || []).map((t) => ({ ...t, busy: false, sending: false }));
+    threads = (s.threads || []).map((t) => ({ ...t, busy: false, sending: false, msgs: (t.msgs || []).map((m, i) => ({ id: t.id + "-" + i, createdAt: (t.createdAt || 0) + i, ...m })) }));
     maxSeen = s.maxSeen || 0; suggestions = s.suggestions || []; finished = !!s.finished;
     stateAt = s.stateAt || 0; deletedIds = s.deletedIds || [];
   }
-  // What is saved for a thread: everything but the in-flight flags and computed placement.
+  // What this browser keeps for a thread: everything but the in-flight flags and computed placement.
   function stored(t) { const { busy, sending, orphan, ...rest } = t; return JSON.parse(JSON.stringify(rest)); }
   const sortThreads = () => threads.sort((a, b) => ((a.createdAt || 0) - (b.createdAt || 0)) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const newId = (p) => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
   // ---------- anchoring ----------
   // A thread remembers its block's id and text. If the document was revised, it is
@@ -190,22 +191,43 @@
     t.orphan = false; t.blockId = hit.id; t.blockText = textOf(hit);
     return true;
   }
-  function anchorAll() { for (const t of threads) if (anchor(t)) touch(t); }
+  // Only the thread's author re-places it in the shared copy; others just show it re-placed.
+  function anchorAll() { for (const t of threads) if (anchor(t) && mine(t)) touch(t); }
 
-  // ---------- saving with the page ----------
-  // A published page keeps each viewer's threads in the artifact's db, under their own
-  // private path, so they last across browsers and devices. localStorage stays as the
-  // cache, and as the only store where db isn't available (signed out, a view-only
-  // viewer, a self-contained page).
+  // ---------- saving with the page, shared ----------
+  // A published page keeps comment threads in the artifact's db, shared with everyone
+  // who can open it, like comments in a shared document: `threads/<id>` holds a comment,
+  // `replies/<id>` each answer or reply in it (one document per message, so two people
+  // replying at once never overwrite each other). Reading progress and suggestions stay
+  // private, in `data/users/<id>/reader`. localStorage is this browser's cache, and the
+  // only store where db isn't available (signed out, a self-contained page). Viewers who
+  // can't write shared data (Viewer, Commenter) see everyone's comments and keep their own
+  // in this browser.
   let store = null, storeReady = false, storeWritable = true, stateTimer = null, stateBusy = false, stateAgain = false;
-  const writing = new Map();
+  let me = null, userApi = null, canModerate = false, names = {}, lastNameKey = "";
+  const writing = new Map(), waitingReplies = new Map();
+  const mine = (t) => !t.author || t.author === me;
+  const canDelete = (t) => mine(t) || canModerate;
+  function who(author) { return !author || author === me ? "You" : names[author] || "Someone"; }
+  async function refreshNames() {
+    if (!userApi) return;
+    const ids = [...new Set(threads.flatMap((t) => [t.author, ...(t.msgs || []).map((m) => m.author)]).filter((x) => x && x !== me))];
+    const k = ids.join(","); if (!ids.length || k === lastNameKey) return;
+    lastNameKey = k;
+    let ps = {}; try { ps = await userApi.profiles(ids); } catch (e) { return; }
+    let changed = false;
+    for (const id of ids) { const n = (ps[id] && ps[id].name) || ""; if (n && names[id] !== n) { names[id] = n; changed = true; } }
+    if (changed) renderAll();
+  }
   function saveNote(where) {
     const n = $("saveNote"); if (!n) return;
-    n.textContent = where === "account"
-      ? "Your comments are saved with this page, for you only, so they are here when you come back on any device."
-      : where === "waiting"
-        ? "Your saved comments can’t be reached yet; showing the ones in this browser."
-        : "Your comments are saved in this browser only.";
+    n.textContent = where === "shared"
+      ? "Comments are shared with everyone who can open this page, and update live."
+      : where === "readonly"
+        ? "You can see everyone’s comments. Yours are kept in this browser only: adding shared comments needs Contributor access to this page."
+        : where === "waiting"
+          ? "Shared comments can’t be reached yet; showing the ones in this browser."
+          : "Your comments are saved in this browser only.";
   }
   const pause = (ms) => new Promise((r) => setTimeout(r, ms));
   async function dbCall(fn) {
@@ -216,37 +238,56 @@
     const c = e && e.code;
     if (c === "quota_exceeded") { setStatus("This page’s storage is full, so new comments are kept in this browser only.", true); return; }
     if (c === "resource_exhausted" || c === "unavailable") return; // a later change saves again
-    storeWritable = false; saveNote("browser"); // can't write here (e.g. a view-only viewer)
+    storeWritable = false; saveNote("readonly"); // e.g. a Viewer or Commenter
   }
-  function touch(t) { t.updatedAt = Date.now(); writeThread(t.id); }
-  // One write at a time per thread; a change made meanwhile is written right after.
-  async function writeThread(id) {
+  const findMsg = (id) => { for (const t of threads) for (const m of t.msgs || []) if (m.id === id) return { t, m }; return null; };
+  const threadDoc = (t) => { const { msgs, busy, sending, orphan, synced, ...rest } = t; return JSON.parse(JSON.stringify(rest)); };
+  const replyDoc = (t, m) => { const { synced, ...rest } = m; return JSON.parse(JSON.stringify({ ...rest, threadId: t.id })); };
+  function touch(t) { t.updatedAt = Date.now(); writeDoc("threads", t.id); }
+  // A message by this viewer: shown now, shared right away unless `hold` (sent after Claude answers).
+  function addMsg(t, m, hold) {
+    m.id = newId("m"); m.author = me || null; m.createdAt = Date.now();
+    t.msgs.push(m); if (!hold) writeDoc("replies", m.id);
+    return m;
+  }
+  // One write at a time per document; a change made meanwhile is written right after.
+  async function writeDoc(col, id) {
     if (!storeReady || !storeWritable) return;
-    const w = writing.get(id); if (w) { w.again = true; return; }
-    writing.set(id, { again: false });
+    const key = col + "/" + id, w = writing.get(key); if (w) { w.again = true; return; }
+    writing.set(key, { again: false });
     try {
       for (;;) {
-        const t = threads.find((x) => x.id === id);
-        if (t) await dbCall(() => store.threads.doc(id).set(stored(t)));
-        else { await dbCall(() => store.threads.doc(id).delete()); deletedIds = deletedIds.filter((x) => x !== id); save(); }
-        const st = writing.get(id); if (!st.again) break; st.again = false;
+        const ref = store[col].doc(id);
+        if (col === "threads") {
+          const t = threads.find((x) => x.id === id);
+          if (t) { await dbCall(() => ref.set(threadDoc(t))); t.synced = true; }
+          else { await dbCall(() => ref.delete()); deletedIds = deletedIds.filter((x) => x !== key); save(); }
+        } else {
+          const f = findMsg(id);
+          if (f) { await dbCall(() => ref.set(replyDoc(f.t, f.m))); f.m.synced = true; }
+          else { await dbCall(() => ref.delete()); deletedIds = deletedIds.filter((x) => x !== key); save(); }
+        }
+        const st = writing.get(key); if (!st.again) break; st.again = false;
       }
     } catch (e) { storeFail(e); }
-    writing.delete(id);
+    writing.delete(key);
   }
   function touchState() { stateAt = Date.now(); clearTimeout(stateTimer); stateTimer = setTimeout(writeState, 1500); }
   async function writeState() {
-    if (!storeReady || !storeWritable) return;
+    if (!store || !store.state || !storeReady) return;
     if (stateBusy) { stateAgain = true; return; }
     stateBusy = true;
     try { do { stateAgain = false; await dbCall(() => store.state.set({ maxSeen, finished, suggestions, updatedAt: stateAt })); } while (stateAgain); }
-    catch (e) { storeFail(e); }
+    catch (e) { /* private progress is a nicety; this browser keeps it */ }
     stateBusy = false;
   }
   function removeThread(id) {
+    const t = threads.find((x) => x.id === id); if (!t || !canDelete(t)) return;
     threads = threads.filter((x) => x.id !== id);
-    if (!deletedIds.includes(id)) deletedIds.push(id);
-    renderAll(); writeThread(id);
+    const keys = ["threads/" + id, ...(t.msgs || []).map((m) => "replies/" + m.id)];
+    for (const k of keys) if (!deletedIds.includes(k)) deletedIds.push(k);
+    renderAll();
+    writeDoc("threads", id); for (const m of t.msgs || []) writeDoc("replies", m.id);
   }
 
   function mergeThreads(snap) {
@@ -257,9 +298,34 @@
         if (!snap.metadata.fromCache && t && !t.sending && !t.busy) { threads.splice(i, 1); changed = true; }
         continue;
       }
-      const r = ch.doc.data(); if (!r || deletedIds.includes(id)) continue;
-      if (!t) { const n = { ...r, id, busy: false, sending: false }; threads.push(n); anchor(n); changed = true; }
-      else if ((r.updatedAt || 0) > (t.updatedAt || 0) && !t.sending && !t.busy) { Object.assign(t, r); anchor(t); changed = true; }
+      const r = ch.doc.data(); if (!r || deletedIds.includes("threads/" + id)) continue;
+      if (!t) {
+        const n = { ...r, id, msgs: waitingReplies.get(id) || [], busy: false, sending: false, synced: true };
+        waitingReplies.delete(id); n.msgs.sort((a, b) => a.createdAt - b.createdAt);
+        threads.push(n); anchor(n); changed = true;
+      } else {
+        t.synced = true;
+        if ((r.updatedAt || 0) > (t.updatedAt || 0) && !t.sending && !t.busy) { Object.assign(t, r); anchor(t); changed = true; }
+      }
+    }
+    return changed;
+  }
+  function mergeReplies(snap) {
+    let changed = false;
+    for (const ch of snap.docChanges()) {
+      const id = ch.doc.id;
+      if (ch.type === "removed") {
+        if (snap.metadata.fromCache) continue;
+        const f = findMsg(id); if (f && !f.t.busy) { f.t.msgs = f.t.msgs.filter((m) => m.id !== id); changed = true; }
+        continue;
+      }
+      const r = ch.doc.data(); if (!r || !r.threadId || deletedIds.includes("replies/" + id)) continue;
+      const m = { id, role: r.role === "ai" ? "ai" : "you", text: String(r.text || ""), verdict: r.verdict || "", author: r.author || null, createdAt: r.createdAt || 0, synced: true };
+      const f = findMsg(id);
+      if (f) { f.m.synced = true; continue; }
+      const t = threads.find((x) => x.id === r.threadId);
+      if (!t) { const w = waitingReplies.get(r.threadId) || []; w.push(m); waitingReplies.set(r.threadId, w); continue; }
+      t.msgs.push(m); t.msgs.sort((a, b) => a.createdAt - b.createdAt); changed = true;
     }
     return changed;
   }
@@ -273,37 +339,66 @@
   }
 
   async function initStore() {
-    if (standalone || !(window.claude && window.claude.use)) { saveNote("browser"); return; }
     saveNote("browser");
-    let db = null, user = null, uid = null;
+    if (standalone || !(window.claude && window.claude.use)) return;
+    let db = null, user = null;
     try { [db, user] = await Promise.all([window.claude.use("db"), window.claude.use("user")]); } catch (e) {}
-    try { if (db && user) uid = await user.id(); } catch (e) {}
-    if (!uid) return;
-    try { const base = db.doc("data/users/" + uid + "/reader"); store = { state: base, threads: base.collection("threads") }; } catch (e) { return; }
+    if (!db) return;
+    userApi = user;
+    try { if (user) { me = await user.id(); canModerate = !!(await user.canEdit()); } } catch (e) {}
+    if (!me) return; // signed out: no identity to put on shared comments
+    try { if (user && (await user.can("data.write")) === false) storeWritable = false; } catch (e) {}
+    // Threads from before identities existed are this viewer's own.
+    for (const t of threads) { if (!t.author) t.author = me; for (const m of t.msgs || []) if (!m.author && m.role !== "ai") m.author = me; }
+    try { store = { threads: db.collection("threads"), replies: db.collection("replies"), state: db.doc("data/users/" + me + "/reader") }; } catch (e) { return; }
     const timer = setTimeout(() => { if (!storeReady) saveNote("waiting"); }, 10000);
-    let stateSeen = false;
-    store.threads.onSnapshot((snap) => {
-      const changed = mergeThreads(snap);
-      if (!storeReady && !snap.metadata.fromCache) {
-        storeReady = true; clearTimeout(timer); if (storeWritable) saveNote("account");
-        // Send up what only this browser has: older comments, and changes made offline.
-        const remote = new Map(snap.docs.map((d) => [d.id, d.data() || {}]));
-        for (const t of threads) { const r = remote.get(t.id); if (!r || (t.updatedAt || 0) > (r.updatedAt || 0)) writeThread(t.id); }
-        for (const id of deletedIds) if (remote.has(id)) writeThread(id); else deletedIds = deletedIds.filter((x) => x !== id);
-        if (stateSeen) writeState();
+    let threadsSeen = false, repliesSeen = false, remoteThreads = null, remoteReplies = null;
+    // Once both collections have answered: send up what only this browser has (comments
+    // made before sharing, or offline), and drop what was deleted elsewhere.
+    function reconcile() {
+      storeReady = true; clearTimeout(timer); saveNote(storeWritable ? "shared" : "readonly");
+      let changed = false;
+      for (const t of [...threads]) {
+        const r = remoteThreads.get(t.id);
+        if (!r) {
+          if (t.synced) { threads = threads.filter((x) => x !== t); changed = true; continue; }
+          if (mine(t)) writeDoc("threads", t.id);
+        } else if (mine(t) && (t.updatedAt || 0) > (r.updatedAt || 0)) writeDoc("threads", t.id);
+        for (const m of [...(t.msgs || [])]) {
+          if (remoteReplies.has(m.id)) continue;
+          if (m.synced) { t.msgs = t.msgs.filter((x) => x !== m); changed = true; }
+          else if (mine(t) || m.author === me) writeDoc("replies", m.id);
+        }
       }
-      if (changed) { sortThreads(); renderAll(); }
+      for (const k of [...deletedIds]) {
+        const [col, id] = k.split("/");
+        if ((col === "threads" ? remoteThreads : remoteReplies).has(id)) writeDoc(col, id); else deletedIds = deletedIds.filter((x) => x !== k);
+      }
+      writeState();
+      return changed;
+    }
+    const after = (changed) => { if (changed) { sortThreads(); renderAll(); refreshNames(); } };
+    store.threads.onSnapshot((snap) => {
+      let changed = mergeThreads(snap);
+      if (!threadsSeen && !snap.metadata.fromCache) {
+        threadsSeen = true; remoteThreads = new Map(snap.docs.map((d) => [d.id, d.data() || {}]));
+        if (repliesSeen) changed = reconcile() || changed;
+      }
+      after(changed);
     }, (e) => { clearTimeout(timer); storeFail(e); });
+    store.replies.onSnapshot((snap) => {
+      let changed = mergeReplies(snap);
+      if (!repliesSeen && !snap.metadata.fromCache) {
+        repliesSeen = true; remoteReplies = new Map(snap.docs.map((d) => [d.id, true]));
+        if (threadsSeen) changed = reconcile() || changed;
+      }
+      after(changed);
+    }, () => {});
     store.state.onSnapshot((snap) => {
       const d = snap.exists ? snap.data() : null;
-      const changed = mergeState(d);
-      if (!snap.metadata.fromCache && !stateSeen) {
-        stateSeen = true;
-        const behind = !d || maxSeen > (d.maxSeen || 0) || (finished && !d.finished) || stateAt > (d.updatedAt || 0);
-        if (behind) { if (!stateAt) stateAt = Date.now(); if (storeReady) writeState(); }
-      }
-      if (changed) { updProg(); renderAll(); }
+      if (mergeState(d)) { updProg(); renderAll(); }
     }, () => {});
+    refreshNames();
   }
 
   // ---------- render ----------
@@ -349,6 +444,7 @@
   }
 
   function renderAll() {
+    const typing = captureTyping();
     for (const b of blocks) {
       const el = $(b.id); if (!el) continue;
       const ts = threads.filter((t) => t.blockId === b.id && !t.orphan);
@@ -367,6 +463,23 @@
     if ($("submit2")) $("submit2").style.display = finished ? "none" : "";
     renderSuggest();
     renderSide(); wire(); save();
+    restoreTyping(typing);
+    refreshNames();
+  }
+  // Other people's comments arrive live and re-render the page: keep what this viewer
+  // is typing (the comment box and reply boxes), and where the cursor was.
+  function captureTyping() {
+    const a = document.activeElement, focus = a && a.tagName === "TEXTAREA" ? (a.id || "f:" + a.dataset.follow) : null;
+    const s = { follow: {}, focus, sel: focus ? [a.selectionStart, a.selectionEnd] : null };
+    if ($("ctext") && openComposer) openComposer.text = $("ctext").value;
+    document.querySelectorAll("[data-follow]").forEach((ta) => { if (ta.value) s.follow[ta.dataset.follow] = ta.value; });
+    return s;
+  }
+  function restoreTyping(s) {
+    for (const id in s.follow) { const ta = document.querySelector(`[data-follow="${id}"]`); if (ta && !ta.value) ta.value = s.follow[id]; }
+    if (!s.focus) return;
+    const el = s.focus.startsWith("f:") ? document.querySelector(`[data-follow="${s.focus.slice(2)}"]`) : $(s.focus);
+    if (el && document.activeElement !== el) { el.focus(); try { el.setSelectionRange(s.sel[0], s.sel[1]); } catch (e) {} }
   }
 
   function highlight(el, b, ts) {
@@ -389,20 +502,27 @@
     const editing = openComposer && openComposer.editId === t.id;
     let h = `<div class="card" id="card-${t.id}">`;
     if (editing) h += composerHTML(openComposer);
-    else h += `<div class="msg"><div class="meta"><b>You</b><span class="badge k-${t.kind}">${T().kinds[t.kind]}</span>${t.status === "pending" && !t.sending ? `<span class="pending-tag">${standalone ? "Queued" : "Not sent"}</span>` : ""}
-      <div class="acts">${t.status === "pending" && !t.sending ? `${standalone ? "" : `<button class="ghost" data-ask="${t.id}">Send</button>`}<button class="ghost" data-edit="${t.id}">Edit</button><button class="ghost" data-del="${t.id}">Delete</button>` : ""}</div></div>
+    else {
+      const own = mine(t), idle = t.status === "pending" && !t.sending;
+      const tag = idle ? (own ? (standalone ? "Queued" : "Not sent") : "Waiting for an answer") : "";
+      const acts = own && idle
+        ? `${standalone ? "" : `<button class="ghost" data-ask="${t.id}">Send</button>`}<button class="ghost" data-edit="${t.id}">Edit</button><button class="ghost" data-del="${t.id}">Delete</button>`
+        : canDelete(t) && !t.sending && !t.busy ? `<button class="ghost" data-del="${t.id}">Delete</button>` : "";
+      h += `<div class="msg"><div class="meta"><b>${esc(who(t.author))}</b><span class="badge k-${t.kind}">${T().kinds[t.kind]}</span>${tag ? `<span class="pending-tag">${tag}</span>` : ""}
+      <div class="acts">${acts}</div></div>
       ${t.quote ? `<div class="quote">“${esc(t.quote)}”</div>` : ""}<div class="body">${fmtBody(t.text)}</div></div>`;
+    }
     for (const m of t.msgs || []) {
       h += m.role === "ai"
         ? `<div class="msg ai"><div class="meta"><b>${T().who}</b>${m.verdict ? `<span class="badge v">${esc(m.verdict)}</span>` : ""}</div><div class="body">${fmtBody(m.text)}</div></div>`
-        : `<div class="msg"><div class="meta"><b>You</b><span>follow-up</span></div><div class="body">${fmtBody(m.text)}</div></div>`;
+        : `<div class="msg"><div class="meta"><b>${esc(who(m.author))}</b><span>reply</span></div><div class="body">${fmtBody(m.text)}</div></div>`;
     }
     if (t.sending) h += `<div class="msg"><span class="spinner"></span><span style="color:var(--muted)">${T().who} is replying…</span></div>`;
     if (t.status === "answered") {
       h += t.busy
         ? `<div class="msg"><span class="spinner"></span><span style="color:var(--muted)">${T().who} is replying…</span></div>`
-        : `<div class="composer" style="border-top:1px solid var(--line)"><textarea data-follow="${t.id}" placeholder="Reply to continue this thread… (Ctrl+Enter)" style="min-height:38px"></textarea>
-           <div class="row"><span class="hint">${T().follow}</span><button data-send="${t.id}">Reply</button></div></div>`;
+        : `<div class="composer" style="border-top:1px solid var(--line)"><textarea data-follow="${t.id}" placeholder="Reply to continue this thread… (Ctrl+Enter asks ${T().who.toLowerCase()})" style="min-height:38px"></textarea>
+           <div class="row"><span class="hint">${T().follow}</span>${store ? `<button class="ghost" data-post="${t.id}" title="Post without asking ${T().who.toLowerCase()}">Reply</button>` : ""}<button data-send="${t.id}">Ask ${T().who.toLowerCase()}</button></div></div>`;
     }
     return h + "</div>";
   }
@@ -443,6 +563,7 @@
     }));
     document.querySelectorAll("[data-ask]").forEach((b) => (b.onclick = () => ask([threads.find((x) => x.id === b.dataset.ask)])));
     document.querySelectorAll("[data-send]").forEach((b) => (b.onclick = () => followUp(b.dataset.send)));
+    document.querySelectorAll("[data-post]").forEach((b) => (b.onclick = () => postReply(b.dataset.post)));
     document.querySelectorAll("[data-follow]").forEach((ta) => (ta.onkeydown = (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); followUp(ta.dataset.follow); } }));
   }
   function focusComposer() { const t = $("ctext"); if (t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); } }
@@ -450,10 +571,10 @@
   function saveComposer() {
     const text = $("ctext").value.trim(); if (!text) { $("ctext").focus(); return; }
     let t;
-    if (openComposer.editId) { t = threads.find((x) => x.id === openComposer.editId); t.text = text; t.kind = openComposer.kind; }
+    if (openComposer.editId) { t = threads.find((x) => x.id === openComposer.editId); if (!t || !mine(t)) { openComposer = null; renderAll(); return; } t.text = text; t.kind = openComposer.kind; }
     else {
       const b = blocks.find((x) => x.id === openComposer.blockId);
-      t = { id: "c" + Date.now().toString(36), blockId: openComposer.blockId, blockText: b ? textOf(b) : "", quote: openComposer.quote || "", kind: openComposer.kind || "question", text, status: "pending", msgs: [], docHash: hash(docSrc), createdAt: Date.now() };
+      t = { id: "c" + Date.now().toString(36), blockId: openComposer.blockId, blockText: b ? textOf(b) : "", quote: openComposer.quote || "", kind: openComposer.kind || "question", text, status: "pending", msgs: [], docHash: hash(docSrc), createdAt: Date.now(), author: me || null };
       threads.push(t);
     }
     openComposer = null; touch(t); renderAll();
@@ -469,7 +590,8 @@
     $("orphans").innerHTML = lost.length
       ? `<div class="sub" style="margin:12px 0 6px"><b>From an earlier version</b>: the passages these were left on have changed, so they can’t be placed in the text.</div>` + lost.map(orphanHTML).join("")
       : "";
-    $("clearBtn").style.display = threads.length ? "" : "none";
+    const anyMine = threads.some((t) => mine(t) || (t.msgs || []).some((m) => m.role !== "ai" && m.author && m.author === me));
+    $("clearBtn").style.display = anyMine ? "" : "none";
     $("list").innerHTML = all.length
       ? all.map((t) => `<div class="item ${t.status === "answered" ? "done" : ""}" data-jump="${t.id}"><span class="dot k-${t.kind}"></span><span class="t">${esc(t.text)}</span>${t.status === "answered" ? '<span style="color:var(--accent)">✓</span>' : ""}</div>`).join("")
       : `<div class="empty">${T().empty}</div>`;
@@ -477,7 +599,7 @@
       const c = $("card-" + n.dataset.jump);
       if (c) { c.scrollIntoView({ behavior: "smooth", block: "center" }); c.classList.remove("flash"); void c.offsetWidth; c.classList.add("flash"); }
     }));
-    const idle = pend.filter((t) => !t.sending);
+    const idle = pend.filter((t) => !t.sending && mine(t));
     $("submitBtn").style.display = standalone || idle.length ? "" : "none";
     $("submitBtn").disabled = !idle.length;
     $("submitBtn").textContent = standalone ? (idle.length ? `${T().send} (${idle.length})` : T().send) : `Send again (${idle.length})`;
@@ -485,9 +607,9 @@
   }
 
   function orphanHTML(t) {
-    let h = `<div class="card" id="card-${t.id}"><div class="msg"><div class="meta"><b>You</b><span class="badge k-${t.kind}">${T().kinds[t.kind]}</span><div class="acts"><button class="ghost" data-del="${t.id}">Delete</button></div></div>
+    let h = `<div class="card" id="card-${t.id}"><div class="msg"><div class="meta"><b>${esc(who(t.author))}</b><span class="badge k-${t.kind}">${T().kinds[t.kind]}</span><div class="acts">${canDelete(t) ? `<button class="ghost" data-del="${t.id}">Delete</button>` : ""}</div></div>
       ${t.quote || t.blockText ? `<div class="quote">“${esc(t.quote || String(t.blockText).slice(0, 160) + "…")}”</div>` : ""}<div class="body">${fmtBody(t.text)}</div></div>`;
-    for (const m of t.msgs || []) h += `<div class="msg${m.role === "ai" ? " ai" : ""}"><div class="meta"><b>${m.role === "ai" ? T().who : "You"}</b></div><div class="body">${fmtBody(m.text)}</div></div>`;
+    for (const m of t.msgs || []) h += `<div class="msg${m.role === "ai" ? " ai" : ""}"><div class="meta"><b>${m.role === "ai" ? T().who : esc(who(m.author))}</b></div><div class="body">${fmtBody(m.text)}</div></div>`;
     return h + "</div>";
   }
 
@@ -593,7 +715,7 @@ Reply with ONLY a JSON object, no prose before or after:
 
 DOCUMENT: ${meta.title}
 ${docForPrompt()}
-${prior ? `\nEARLIER COMMENTS FROM THIS READER (already answered, for context):\n${prior}\n` : ""}
+${prior ? `\nEARLIER COMMENTS ON THIS DOCUMENT (already answered, for context):\n${prior}\n` : ""}
 NEW COMMENTS:
 ${JSON.stringify(items, null, 1)}`;
   }
@@ -611,7 +733,7 @@ ${JSON.stringify(items, null, 1)}`;
     let n = 0;
     for (const r of data.replies) {
       const t = threads.find((x) => x.id === r.id);
-      if (t && t.status === "pending") { t.msgs.push({ role: "ai", text: r.reply || "", verdict: r.verdict || "" }); t.status = "answered"; touch(t); n++; }
+      if (t && t.status === "pending") { addMsg(t, { role: "ai", text: r.reply || "", verdict: r.verdict || "" }); t.status = "answered"; touch(t); n++; }
     }
     return n;
   }
@@ -622,7 +744,7 @@ ${JSON.stringify(items, null, 1)}`;
   // "Send" / "Send again" retry ones that didn't go through. A self-contained page
   // can't call Claude, so there this copies them as a prompt instead.
   async function ask(list) {
-    list = list.filter((t) => t && t.status === "pending" && !t.sending); if (!list.length) return;
+    list = list.filter((t) => t && mine(t) && t.status === "pending" && !t.sending); if (!list.length) return;
     if (standalone) { offline(); await copyPrompt(list); return; }
     list.forEach((t) => (t.sending = true)); renderAll();
     const got = await sampleOrWhy(), sample = got.sample;
@@ -645,30 +767,53 @@ ${JSON.stringify(items, null, 1)}`;
     ask(threads.filter((t) => t.status === "pending"));
   }
 
+  // Post a reply to the people in the thread, without asking Claude.
+  function postReply(id) {
+    const t = threads.find((x) => x.id === id); const ta = document.querySelector(`[data-follow="${id}"]`);
+    const text = ta && ta.value.trim(); if (!t || !text) return;
+    ta.value = ""; addMsg(t, { role: "you", text }); renderAll();
+  }
+
   async function followUp(id) {
     const t = threads.find((x) => x.id === id); const ta = document.querySelector(`[data-follow="${id}"]`);
     const text = ta && ta.value.trim(); if (!text) return;
     if (standalone) { setStatus("Replying in a thread needs Claude in the page. Use <b>Copy as Markdown</b> and paste it into Claude to keep going.", true); return; }
     const got = await sampleOrWhy(), sample = got.sample; if (!sample) { showWhy(got); return; }
-    t.msgs.push({ role: "you", text }); t.busy = true; renderAll();
+    ta.value = "";
+    const mine1 = addMsg(t, { role: "you", text }, true); t.busy = true; renderAll();
     const blk = blocks.find((b) => b.id === t.blockId);
     const role = meta.mode === "learn" ? "a patient, rigorous tutor helping a learner" : "a senior reviewer helping a reader evaluate";
-    const setup = `You are ${role} reading the document below.\n\nDOCUMENT: ${meta.title}\n${docForPrompt()}\n\nThey left a ${T().kinds[t.kind].toLowerCase()} on block [${t.blockId}]:\n"""${blk ? plain(blk.x) : "(the document as a whole)"}"""${t.quote ? `\nThey highlighted: "${t.quote}"` : ""}\n\nTheir original note: ${t.text}\n\nContinue the thread. Be direct and correct; ${meta.mode === "learn" ? "if they explain something back, tell them precisely what's right and what's off" : "hold your position when you are right and concede clearly when they are"}. 2–6 sentences, plain text, no JSON. You have no web access. If an answer depends on something that changes over time (versions, prices, current products, recent events), say so and suggest checking a current source.`;
+    // A shared thread can have several people in it: name them so Claude can tell them apart.
+    const people = new Set([t.author, ...t.msgs.filter((m) => m.role !== "ai").map((m) => m.author)].map((x) => x || me));
+    const label = (author) => (people.size > 1 ? (who(author) === "You" ? "The reader asking now" : who(author)) + ": " : "");
+    const setup = `You are ${role} reading the document below.
+
+DOCUMENT: ${meta.title}
+${docForPrompt()}
+
+${people.size > 1 ? "Several readers share this page. " : ""}A reader left a ${T().kinds[t.kind].toLowerCase()} on block [${t.blockId}]:
+"""${blk ? plain(blk.x) : "(the document as a whole)"}"""${t.quote ? `
+They highlighted: "${t.quote}"` : ""}
+
+${label(t.author)}Original note: ${t.text}
+
+Continue the thread, answering the latest message. Be direct and correct; ${meta.mode === "learn" ? "if they explain something back, tell them precisely what's right and what's off" : "hold your position when you are right and concede clearly when they are"}. 2–6 sentences, plain text, no JSON. You have no web access. If an answer depends on something that changes over time (versions, prices, current products, recent events), say so and suggest checking a current source.`;
     const conv = [{ role: "user", content: setup }];
     for (const m of t.msgs) {
-      const r = m.role === "ai" ? "assistant" : "user";
+      const r = m.role === "ai" ? "assistant" : "user", c = r === "user" ? label(m.author) + m.text : m.text;
       const last = conv[conv.length - 1];
-      if (last.role === r) last.content += "\n\n" + m.text; else conv.push({ role: r, content: m.text });
+      if (last.role === r) last.content += "\n\n" + c; else conv.push({ role: r, content: c });
     }
+    let failed = false;
     try {
       const res = await sample(conv, { modelTier: "default", cache: false });
-      t.msgs.push({ role: "ai", text: (res.text || "").trim() });
+      writeDoc("replies", mine1.id);
+      addMsg(t, { role: "ai", text: (res.text || "").trim() });
     } catch (e) {
-      t.msgs.pop();
+      failed = true; t.msgs = t.msgs.filter((m) => m !== mine1);
       setStatus(e && e.code === "rate_limited" ? "Rate limited — try again shortly." : esc((e && e.message) || "Reply failed."), true);
     }
-    const failed = t.msgs[t.msgs.length - 1].role !== "ai";
-    t.busy = false; if (!failed) touch(t); renderAll();
+    t.busy = false; renderAll();
     if (failed) { const box = document.querySelector(`[data-follow="${id}"]`); if (box) { box.value = text; box.focus(); } }
   }
 
@@ -724,16 +869,16 @@ ${explored ? `\nWHAT THEY COMMENTED ON:\n${explored}` : "\nThey left no comments
   function toMarkdown() {
     const out = [docSrc.trim(), "", "---", "", `## Comments (${meta.mode})`, ""];
     for (const b of blocks) for (const t of threads.filter((x) => x.blockId === b.id && !x.orphan)) {
-      out.push(`### ${T().kinds[t.kind]} on: ${t.quote ? "“" + t.quote + "”" : plain(b.x).slice(0, 80) + "…"}`, "", `**You:** ${t.text}`, "");
-      for (const m of t.msgs || []) out.push(`**${m.role === "ai" ? T().who : "You"}${m.verdict ? " (" + m.verdict + ")" : ""}:** ${m.text}`, "");
+      out.push(`### ${T().kinds[t.kind]} on: ${t.quote ? "“" + t.quote + "”" : plain(b.x).slice(0, 80) + "…"}`, "", `**${who(t.author)}:** ${t.text}`, "");
+      for (const m of t.msgs || []) out.push(`**${m.role === "ai" ? T().who : who(m.author)}${m.verdict ? " (" + m.verdict + ")" : ""}:** ${m.text}`, "");
     }
     for (const t of threads.filter((x) => x.blockId === "end")) {
-      out.push(`### ${T().kinds[t.kind]} on the whole document`, "", `**You:** ${t.text}`, "");
-      for (const m of t.msgs || []) out.push(`**${m.role === "ai" ? T().who : "You"}${m.verdict ? " (" + m.verdict + ")" : ""}:** ${m.text}`, "");
+      out.push(`### ${T().kinds[t.kind]} on the whole document`, "", `**${who(t.author)}:** ${t.text}`, "");
+      for (const m of t.msgs || []) out.push(`**${m.role === "ai" ? T().who : who(m.author)}${m.verdict ? " (" + m.verdict + ")" : ""}:** ${m.text}`, "");
     }
     for (const t of threads.filter((x) => x.orphan)) {
-      out.push(`### ${T().kinds[t.kind]} from an earlier version, on: “${t.quote || String(t.blockText || "").slice(0, 80) + "…"}”`, "", `**You:** ${t.text}`, "");
-      for (const m of t.msgs || []) out.push(`**${m.role === "ai" ? T().who : "You"}${m.verdict ? " (" + m.verdict + ")" : ""}:** ${m.text}`, "");
+      out.push(`### ${T().kinds[t.kind]} from an earlier version, on: “${t.quote || String(t.blockText || "").slice(0, 80) + "…"}”`, "", `**${who(t.author)}:** ${t.text}`, "");
+      for (const m of t.msgs || []) out.push(`**${m.role === "ai" ? T().who : who(m.author)}${m.verdict ? " (" + m.verdict + ")" : ""}:** ${m.text}`, "");
     }
     if (suggestions.length) { out.push("## Explore next", ""); for (const s of suggestions) out.push(`- **${s.title}**: ${s.why}`); out.push(""); }
     return out.join("\n");
@@ -767,10 +912,15 @@ ${explored ? `\nWHAT THEY COMMENTED ON:\n${explored}` : "\nThey left no comments
       return;
     }
     clearTimeout(clearArmed); clearArmed = null; $("clearBtn").textContent = "Clear my comments";
-    const ids = threads.map((t) => t.id);
-    threads = []; openComposer = null;
-    for (const id of ids) if (!deletedIds.includes(id)) deletedIds.push(id);
-    renderAll(); ids.forEach(writeThread);
+    // Your own threads go, with every reply in them; your replies in other people's threads go too.
+    const own = threads.filter(mine), keys = [];
+    for (const t of own) keys.push("threads/" + t.id, ...(t.msgs || []).map((m) => "replies/" + m.id));
+    for (const t of threads) if (!mine(t)) for (const m of t.msgs || []) if (m.author === me && m.role !== "ai") keys.push("replies/" + m.id);
+    threads = threads.filter((t) => !mine(t));
+    for (const t of threads) t.msgs = (t.msgs || []).filter((m) => !keys.includes("replies/" + m.id));
+    openComposer = null;
+    for (const k of keys) if (!deletedIds.includes(k)) deletedIds.push(k);
+    renderAll(); keys.forEach((k) => { const [c, id] = k.split("/"); writeDoc(c, id); });
     setStatus("Your comments were deleted.");
   };
   getSample(); // warm up; a miss here is retried on the next comment
